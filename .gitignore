@@ -24,9 +24,10 @@ build/
 .env
 *.env
 
-# Claude (local only)
+# Claude Code (private — do not commit)
 CLAUDE.md
-.claude/
+CLAUDE.local.md
+.claude/settings.local.json
 
 # OS
 .DS_Store

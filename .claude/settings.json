@@ -1,0 +1,57 @@
+{
+  "project": "market_ml",
+  "permissions": {
+    "allow": [
+      "python src/**",
+      "python .claude/hooks/**",
+      "bash .claude/hooks/**",
+      "git status",
+      "git diff",
+      "git log",
+      "git add src/**",
+      "git add config/**",
+      "git add .claude/**",
+      "git add docs/**",
+      "git add requirements.txt",
+      "git add .gitignore",
+      "git add README.md",
+      "git commit",
+      "git push origin feat/**",
+      "git push origin fix/**",
+      "git push origin exp/**",
+      "git push origin data/**",
+      "pip install -r requirements.txt",
+      "pip show *"
+    ],
+    "deny": [
+      "rm -rf",
+      "git push origin main",
+      "git push --force",
+      "git reset --hard"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/lookahead-bias-check.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/data-validation.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
