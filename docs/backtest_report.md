@@ -1,6 +1,6 @@
 # market_ml Step 10 -- Confidence-Gated Iron Condor Backtest
 
-Generated: 2026-03-28  
+Generated: 2026-03-29  
 Premium collected: 1.5% | Max loss: 3.0% | Breakeven precision: 66.7%  
 Signal source: OOS walk-forward + holdout predictions from 06_train.py  
 (No model loaded, no predict() called -- zero leakage risk)
@@ -11,12 +11,12 @@ Signal source: OOS walk-forward + holdout predictions from 06_train.py
 
 | Threshold | OOS Precision | OOS Trades | Holdout Precision | Holdout Trades | OOS Profitable? |
 |-----------|:-------------:|:----------:|:-----------------:|:--------------:|:---------------:|
-| 0.40 | 0.612 | 20,540 | 0.477 | 1,464 | no <-- 60% flag |
-| 0.45 | 0.658 | 15,356 | 0.502 | 933 | no |
-| 0.50 | 0.717 | 10,442 | 0.525 | 514 | YES <-- OOS breakeven |
-| 0.55 | 0.782 | 6,433 | 0.527 | 296 | YES |
-| 0.60 | 0.846 | 3,634 | 0.554 | 177 | YES |
-| 0.65 | 0.879 | 1,988 | 0.539 | 115 | YES |
+| 0.40 | 0.612 | 20,540 | 0.471 | 2,388 | no <-- 60% flag |
+| 0.45 | 0.658 | 15,356 | 0.495 | 1,470 | no |
+| 0.50 | 0.717 | 10,442 | 0.530 | 824 | YES <-- OOS breakeven |
+| 0.55 | 0.782 | 6,433 | 0.568 | 447 | YES |
+| 0.60 | 0.846 | 3,634 | 0.591 | 232 | YES |
+| 0.65 | 0.879 | 1,988 | 0.557 | 122 | YES |
 | 0.70 | 0.931 | 909 | 0.567 | 67 | YES |
 | 0.75 | 0.958 | 333 | 0.520 | 25 | YES |
 | 0.80 | 0.951 | 61 | (0.538, <20t) | 13 | YES |
@@ -51,7 +51,7 @@ Note: 0.40 precision = 60% < 66.7% breakeven -- **strategy loses money even on O
 ## P&L at OOS-Breakeven Threshold (0.50)
 
 First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitable).  
-**Still unprofitable on holdout** -- holdout precision at 0.50 is ~52.5% < 66.7%.
+**Still unprofitable on holdout** -- holdout precision at 0.50 is ~53.0% < 66.7%.
 
 ### OOS
 
@@ -73,16 +73,16 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 
 | Ticker | Sector | Trades | Win Rate | Avg Return | 100 Trades |
 |--------|--------|--------|:--------:|:----------:|:----------:|
-| GOOGL | tech | 9 | 77.8% | +0.500% | +50.00% |
-| BIIB | biotech | 4 | 75.0% | +0.375% | +37.50% |
+| BIIB | biotech | 5 | 80.0% | +0.600% | +60.00% |
 | NVDA | tech | 0 | N/A | N/A | N/A |
 | MRNA | biotech | 0 | N/A | N/A | N/A |
-| VRTX | biotech | 215 | 57.2% | -0.426% | -42.56% |
-| REGN | biotech | 43 | 55.8% | -0.488% | -48.84% |
-| AMZN | tech | 12 | 50.0% | -0.750% | -75.00% |
-| MSFT | tech | 134 | 49.2% | -0.784% | -78.36% |
-| LLY | biotech | 44 | 47.7% | -0.852% | -85.23% |
-| AAPL | tech | 48 | 39.6% | -1.219% | -121.87% |
+| GOOGL | tech | 24 | 62.5% | -0.188% | -18.75% |
+| MSFT | tech | 256 | 58.2% | -0.381% | -38.09% |
+| VRTX | biotech | 304 | 54.6% | -0.543% | -54.28% |
+| AMZN | tech | 20 | 50.0% | -0.750% | -75.00% |
+| AAPL | tech | 89 | 46.1% | -0.927% | -92.70% |
+| REGN | biotech | 58 | 44.8% | -0.983% | -98.28% |
+| LLY | biotech | 63 | 39.7% | -1.214% | -121.43% |
 | META | tech | 5 | 20.0% | -2.100% | -210.00% |
 
 ### Sector Aggregation (OOS breakeven threshold)
@@ -99,8 +99,8 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 **OOS (training-adjacent):** At threshold 0.50, 10,442 trades, win rate 71.7%, avg return +0.225%/trade (+22.48% per 100 trades).  
 OOS win rate exceeds the 66.7% breakeven -- **profitable on training-adjacent data**.
 
-**Holdout (2024+, clean):** 514 trades, win rate 52.5%, avg return -0.636%/trade (-63.62% per 100 trades).  
-Holdout win rate 52.5% < 66.7% breakeven -- **not yet profitable on genuinely unseen data**.
+**Holdout (2024+, clean):** 824 trades, win rate 53.0%, avg return -0.613%/trade (-61.35% per 100 trades).  
+Holdout win rate 53.0% < 66.7% breakeven -- **not yet profitable on genuinely unseen data**.
 
 **Root cause of OOS/holdout gap:**  
 OOS precision (~71%) reflects historical Sideways periods the model was
@@ -111,7 +111,7 @@ With only ~304 holdout rows per ticker (~1.2 years), confidence intervals
 are wide. Re-evaluate once 2025-2026 data accumulates.
 
 **Best current candidate for cautious paper trading:**  
-- **GOOGL** (tech): holdout win rate 77.8% (9 trades), avg +0.500%/trade
+- **BIIB** (biotech): holdout win rate 80.0% (5 trades), avg +0.600%/trade
 
 ---
 

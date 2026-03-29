@@ -84,9 +84,10 @@ def build_labels(df: pd.DataFrame) -> pd.DataFrame:
         if "hvol_21d" in df.columns:
             df[f"adj_ret_{name}"] = fwd / (df["hvol_21d"] + 1e-9)
 
-    # Drop the final MAX_HORIZON rows — the last 252 rows have NaN labels
-    # because there is no "future" data beyond the dataset end.
-    df = df.iloc[:-MAX_HORIZON]
+    # Drop only the rows where dir_1w cannot be computed (last 5 rows).
+    # Longer-horizon labels (1m..1y) will be 0 (Sideways) for the most recent
+    # rows but those horizons are not used in steps 6-10 which target dir_1w only.
+    df = df.iloc[:-HORIZONS["1w"]]
     return df
 
 
