@@ -49,7 +49,7 @@ from config.tickers import SECTORS, TICKER_SECTOR
 PROCESSED_DIR = ROOT / "data" / "processed"
 MODELS_DIR    = ROOT / "models"
 
-HOLDOUT_DATE = pd.Timestamp("2024-01-01")
+HOLDOUT_DATE = pd.Timestamp("2025-01-01")  # Step 11: pushed from 2024-01-01 to expose 2024 regime
 
 XGB_PARAMS = {
     "n_estimators":     300,
@@ -100,8 +100,25 @@ FDA_5 = [
     "last_fda_outcome", "fda_decisions_trailing_12m", "fda_approval_rate_trailing",
 ]
 
+# 9 regime features (Step 11: VIX, yield spread, sentiment, breadth, HMM)
+REGIME_9 = [
+    "vix_close", "vix_change_1w", "vix_zscore_63d",
+    "yield_spread", "yield_spread_change_1m",
+    "sentiment_zscore",
+    "put_call_ratio",
+    "breadth_pct_above_200d",
+    "hmm_regime",
+]
+
 TARGET = "dir_1w"
 N_SPLITS = 5
+
+# Step 6 OOS F1 scores (holdout was 2024-01-01 -- kept for comparison)
+# These are the reference scores before Step 11 retraining
+STEP6_REFERENCE = {
+    "tech":    {"oos_f1": 0.402, "holdout_f1": 0.414, "holdout_date": "2024-01-01"},
+    "biotech": {"oos_f1": 0.403, "holdout_f1": 0.386, "holdout_date": "2024-01-01"},
+}
 
 # Baseline F1 scores to compare against
 BASELINES = {
@@ -175,7 +192,7 @@ def load_sector_data(sector: str) -> pd.DataFrame:
 
 def build_feature_matrix(df: pd.DataFrame, sector: str) -> tuple[pd.DataFrame, list[str]]:
     """Build feature matrix with ticker_id one-hot columns."""
-    base_feats = SELECTED_36 + EVENT_14
+    base_feats = SELECTED_36 + EVENT_14 + REGIME_9
     if sector == "biotech":
         base_feats = base_feats + FDA_5
 
@@ -520,16 +537,42 @@ def run_sector(sector: str) -> None:
         holdout_data, sector,
     )
 
+    # 11. Step 11 before/after comparison
+    ref = STEP6_REFERENCE[sector]
+    new_oos_f1  = f1_score(oos_actual, oos_pred, average="weighted")
+    new_hold_f1 = (f1_score(holdout_data["actual"], holdout_data["predicted"],
+                            average="weighted") if holdout_data else float("nan"))
+    section(f"Step 11 Before/After Comparison: {sector.upper()}")
+    print(f"\n  {'Metric':<30}  {'Step 6 (old)':>12}  {'Step 11 (new)':>13}  {'Delta':>8}")
+    print(f"  {'-'*70}")
+    print(f"  {'Holdout boundary':<30}  {ref['holdout_date']:>12}  "
+          f"{'2025-01-01':>13}  {'pushed 1yr':>8}")
+    delta_oos  = new_oos_f1  - ref["oos_f1"]
+    delta_hold = new_hold_f1 - ref["holdout_f1"]
+    sign_oos   = "+" if delta_oos  >= 0 else ""
+    sign_hold  = "+" if delta_hold >= 0 else ""
+    print(f"  {'OOS weighted F1':<30}  {ref['oos_f1']:>12.3f}  "
+          f"{new_oos_f1:>13.3f}  {sign_oos}{delta_oos:>7.3f}")
+    print(f"  {'Holdout weighted F1':<30}  {ref['holdout_f1']:>12.3f}  "
+          f"{new_hold_f1:>13.3f}  {sign_hold}{delta_hold:>7.3f}")
+    print(f"  {'Features':<30}  {'56' if sector=='tech' else '60':>12}  "
+          f"{'65' if sector=='tech' else '69':>13}  {'+9 regime':>8}")
+    print(f"\n  NOTE: Holdout F1 change reflects BOTH the new features AND the")
+    print(f"        shorter holdout window (2025-01-01+). These effects cannot be")
+    print(f"        separated without a controlled ablation.")
+
     print(f"\n  {sector.upper()} sector complete.")
 
 
 # ── Entry points ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    section("market_ml -- Step 6: Multi-ticker XGBoost Baseline")
+    section("market_ml -- Step 6/11: Multi-ticker XGBoost (regime-aware retraining)")
     print(f"  Target:    {TARGET}")
-    print(f"  Holdout:   >= {HOLDOUT_DATE.date()}")
+    print(f"  Holdout:   >= {HOLDOUT_DATE.date()}  (Step 11: pushed from 2024-01-01)")
     print(f"  WF splits: {N_SPLITS}")
+    print(f"  Features:  36 tech + 14 event + 9 regime + 6 ticker one-hot = 65 (tech)")
+    print(f"             36 tech + 14 event + 9 regime + 5 FDA + 5 one-hot = 69 (biotech)")
     print(f"  Tech baseline:    F1={BASELINES['tech']['f1']}")
     print(f"  Biotech baseline: F1={BASELINES['biotech']['f1']}")
 

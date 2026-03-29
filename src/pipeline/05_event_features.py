@@ -399,7 +399,12 @@ def coverage_report(combined: pd.DataFrame, new_cols: list, ticker: str) -> None
 # Per-ticker processing
 # ══════════════════════════════════════════════════════════════════════════════
 
-def process_ticker(ticker: str, fred: dict, fda_df: pd.DataFrame) -> bool:
+def process_ticker(
+    ticker:     str,
+    fred:       dict,
+    fda_df:     pd.DataFrame,
+    regime_df:  "pd.DataFrame | None" = None,
+) -> bool:
     labeled_path = PROCESSED_DIR / f"{ticker}_labeled.parquet"
     out_path     = PROCESSED_DIR / f"{ticker}_with_events.parquet"
     sector       = TICKER_SECTOR[ticker]
@@ -441,6 +446,24 @@ def process_ticker(ticker: str, fred: dict, fda_df: pd.DataFrame) -> bool:
         section("D. FDA decision features (biotech)")
         add_fda_features(feat, fda_df, ticker)
 
+    # E. Regime features from Step 11 (VIX, yield spread, sentiment, breadth, HMM)
+    if regime_df is not None and len(regime_df) > 0:
+        section("E. Regime features (Step 11: VIX, yield spread, sentiment, breadth, HMM)")
+        # Forward-fill regime features onto ticker trading dates
+        combined_idx = trading_dates.union(regime_df.index)
+        regime_aligned = (
+            regime_df
+            .reindex(combined_idx)
+            .sort_index()
+            .ffill()
+            .reindex(trading_dates)
+        )
+        for col in regime_df.columns:
+            feat[col] = regime_aligned[col].values
+        print(f"    Joined {len(regime_df.columns)} regime columns: {list(regime_df.columns)}")
+    else:
+        print("  [WARN] regime_features.parquet not found -- run 11_regime_features.py first")
+
     # Join and save
     new_cols = feat.columns.tolist()
     combined = base.join(feat, how="left")
@@ -478,6 +501,18 @@ def run_all() -> None:
     fda_df.index = pd.to_datetime(fda_df.index).normalize()
     print(f"{len(fda_df)} events loaded")
 
+    # Load regime features (from Step 11) if available
+    regime_path = PROCESSED_DIR / "regime_features.parquet"
+    if regime_path.exists():
+        regime_df = pd.read_parquet(regime_path)
+        regime_df.index = pd.to_datetime(regime_df.index).normalize()
+        print(f"\n  Loading regime features ... {len(regime_df):,} rows x "
+              f"{regime_df.shape[1]} cols  "
+              f"({regime_df.index[0].date()} to {regime_df.index[-1].date()})")
+    else:
+        regime_df = None
+        print("\n  [WARN] regime_features.parquet not found -- run 11_regime_features.py first")
+
     results = {"ok": [], "skip": [], "err": []}
 
     for sector, ticker in all_tickers:
@@ -493,7 +528,7 @@ def run_all() -> None:
             continue
 
         try:
-            success = process_ticker(ticker, fred, fda_df)
+            success = process_ticker(ticker, fred, fda_df, regime_df)
             results["ok"].append(ticker) if success else results["err"].append((ticker, "failed"))
         except Exception as exc:
             print(f"  ERROR: {exc}")
@@ -533,7 +568,12 @@ def run_single(ticker: str) -> None:
     fred   = prefetch_fred()
     fda_df = pd.read_parquet(FDA_EVENTS) if FDA_EVENTS.exists() else pd.DataFrame()
     fda_df.index = pd.to_datetime(fda_df.index).normalize()
-    success = process_ticker(ticker, fred, fda_df)
+    regime_path = PROCESSED_DIR / "regime_features.parquet"
+    regime_df = None
+    if regime_path.exists():
+        regime_df = pd.read_parquet(regime_path)
+        regime_df.index = pd.to_datetime(regime_df.index).normalize()
+    success = process_ticker(ticker, fred, fda_df, regime_df)
     if not success:
         sys.exit(1)
     print("\nDone.\n")

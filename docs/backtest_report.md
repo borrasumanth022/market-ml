@@ -11,96 +11,94 @@ Signal source: OOS walk-forward + holdout predictions from 06_train.py
 
 | Threshold | OOS Precision | OOS Trades | Holdout Precision | Holdout Trades | OOS Profitable? |
 |-----------|:-------------:|:----------:|:-----------------:|:--------------:|:---------------:|
-| 0.40 | 0.612 | 20,540 | 0.471 | 2,388 | no <-- 60% flag |
-| 0.45 | 0.658 | 15,356 | 0.495 | 1,470 | no |
-| 0.50 | 0.717 | 10,442 | 0.530 | 824 | YES <-- OOS breakeven |
-| 0.55 | 0.782 | 6,433 | 0.568 | 447 | YES |
-| 0.60 | 0.846 | 3,634 | 0.591 | 232 | YES |
-| 0.65 | 0.879 | 1,988 | 0.557 | 122 | YES |
-| 0.70 | 0.931 | 909 | 0.567 | 67 | YES |
-| 0.75 | 0.958 | 333 | 0.520 | 25 | YES |
-| 0.80 | 0.951 | 61 | (0.538, <20t) | 13 | YES |
+| 0.40 | 0.496 | 23,280 | 0.449 | 740 | no |
+| 0.45 | 0.519 | 17,272 | 0.506 | 344 | no |
+| 0.50 | 0.544 | 11,383 | 0.606 | 127 | no |
+| 0.55 | 0.573 | 6,896 | 0.690 | 42 | no <-- OOS breakeven |
+| 0.60 | 0.594 | 3,758 | (0.778, <20t) | 9 | no |
+| 0.65 | 0.604 | 1,791 | (1.000, <20t) | 1 | no <-- 60% flag |
+| 0.70 | 0.640 | 702 | 0 trades | 0 | no |
+| 0.75 | 0.655 | 174 | 0 trades | 0 | no |
+| 0.80 | 0.469 | 32 | 0 trades | 0 | no |
 
-**Key finding:** OOS precision exceeds the 66.7% breakeven at threshold 0.50 and above. Holdout precision (~0.48-0.54) never reaches breakeven at any threshold tested.
+**Key finding:** OOS precision exceeds the 66.7% breakeven at threshold 0.55 and above. Holdout precision (~0.48-0.54) never reaches breakeven at any threshold tested.
 
 ---
 
-## P&L at Precision-Flag Threshold (0.40)
+## P&L at Precision-Flag Threshold (0.65)
 
 First threshold where aggregate OOS precision >= 60% with >= 20 avg trades per ticker.  
-Note: 0.40 precision = 60% < 66.7% breakeven -- **strategy loses money even on OOS at this threshold**.
+Note: 0.65 precision = 60% < 66.7% breakeven -- **strategy loses money even on OOS at this threshold**.
 
 ### OOS
 
 | Ticker | Sector | Trades | Win Rate | Avg Return | 100 Trades | BH 100 |
 |--------|--------|--------|:--------:|:----------:|:----------:|:------:|
-| MRNA | biotech | 4 | 100.0% | +1.500% | +150.00% | -63.60% |
-| MSFT | tech | 3549 | 64.2% | -0.110% | -11.03% | +29.21% |
-| VRTX | biotech | 1667 | 63.0% | -0.166% | -16.56% | +6.27% |
-| META | tech | 1019 | 62.7% | -0.178% | -17.81% | +20.45% |
-| GOOGL | tech | 2429 | 61.3% | -0.241% | -24.15% | +29.95% |
-| LLY | biotech | 4608 | 61.1% | -0.250% | -25.00% | +24.02% |
-| REGN | biotech | 1072 | 60.0% | -0.301% | -30.08% | +43.86% |
-| AMZN | tech | 1491 | 60.0% | -0.302% | -30.18% | +35.24% |
-| AAPL | tech | 1834 | 59.3% | -0.330% | -33.04% | +54.65% |
-| NVDA | tech | 501 | 58.9% | -0.350% | -35.03% | +0.85% |
-| BIIB | biotech | 2366 | 58.0% | -0.391% | -39.05% | +50.74% |
+| NVDA | tech | 4 | 75.0% | +0.375% | +37.50% | -87.90% |
+| MSFT | tech | 717 | 67.1% | +0.019% | +1.88% | -6.66% |
+| META | tech | 9 | 66.7% | +0.000% | +0.00% | -26.14% |
+| MRNA | biotech | 0 | N/A | N/A | N/A | N/A |
+| LLY | biotech | 597 | 60.1% | -0.294% | -29.40% | +46.65% |
+| BIIB | biotech | 136 | 56.6% | -0.452% | -45.22% | +66.20% |
+| AMZN | tech | 26 | 53.8% | -0.577% | -57.69% | -43.59% |
+| VRTX | biotech | 17 | 52.9% | -0.618% | -61.76% | +108.06% |
+| REGN | biotech | 18 | 50.0% | -0.750% | -75.00% | +83.19% |
+| GOOGL | tech | 178 | 49.4% | -0.775% | -77.53% | +136.71% |
+| AAPL | tech | 89 | 39.3% | -1.230% | -123.03% | +33.54% |
 
 ---
 
-## P&L at OOS-Breakeven Threshold (0.50)
+## P&L at OOS-Breakeven Threshold (0.55)
 
 First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitable).  
-**Still unprofitable on holdout** -- holdout precision at 0.50 is ~53.0% < 66.7%.
+**Still unprofitable on holdout** -- holdout precision at 0.55 is ~69.0% < 66.7%.
 
 ### OOS
 
 | Ticker | Sector | Trades | Win Rate | Avg Return | 100 Trades | BH 100 |
 |--------|--------|--------|:--------:|:----------:|:----------:|:------:|
-| REGN | biotech | 265 | 83.0% | +0.736% | +73.58% | +21.98% |
-| META | tech | 498 | 76.1% | +0.425% | +42.47% | +14.19% |
-| VRTX | biotech | 838 | 75.4% | +0.394% | +39.38% | -2.78% |
-| AMZN | tech | 551 | 74.4% | +0.348% | +34.85% | +28.62% |
-| BIIB | biotech | 820 | 73.0% | +0.287% | +28.72% | +40.36% |
-| GOOGL | tech | 1196 | 71.6% | +0.221% | +22.07% | +14.42% |
-| MSFT | tech | 2383 | 71.3% | +0.210% | +21.02% | +25.90% |
-| AAPL | tech | 798 | 70.9% | +0.192% | +19.17% | +38.87% |
-| NVDA | tech | 86 | 68.6% | +0.087% | +8.72% | +20.82% |
-| LLY | biotech | 3007 | 68.6% | +0.086% | +8.58% | +20.84% |
 | MRNA | biotech | 0 | N/A | N/A | N/A | N/A |
+| META | tech | 142 | 64.1% | -0.116% | -11.62% | -9.04% |
+| MSFT | tech | 1832 | 62.2% | -0.202% | -20.22% | +23.22% |
+| LLY | biotech | 1999 | 60.1% | -0.294% | -29.41% | +32.38% |
+| NVDA | tech | 30 | 60.0% | -0.300% | -30.00% | +41.27% |
+| GOOGL | tech | 937 | 59.3% | -0.330% | -32.98% | +51.32% |
+| AMZN | tech | 341 | 51.9% | -0.664% | -66.42% | +18.74% |
+| BIIB | biotech | 670 | 51.0% | -0.703% | -70.30% | +82.21% |
+| AAPL | tech | 513 | 45.4% | -0.956% | -95.61% | +72.64% |
+| REGN | biotech | 173 | 45.1% | -0.971% | -97.11% | +130.18% |
+| VRTX | biotech | 259 | 43.2% | -1.054% | -105.41% | -0.35% |
 
 ### Holdout (2024+)
 
 | Ticker | Sector | Trades | Win Rate | Avg Return | 100 Trades |
 |--------|--------|--------|:--------:|:----------:|:----------:|
-| BIIB | biotech | 5 | 80.0% | +0.600% | +60.00% |
+| MSFT | tech | 27 | 77.8% | +0.500% | +50.00% |
 | NVDA | tech | 0 | N/A | N/A | N/A |
+| GOOGL | tech | 0 | N/A | N/A | N/A |
+| META | tech | 0 | N/A | N/A | N/A |
+| LLY | biotech | 0 | N/A | N/A | N/A |
 | MRNA | biotech | 0 | N/A | N/A | N/A |
-| GOOGL | tech | 24 | 62.5% | -0.188% | -18.75% |
-| MSFT | tech | 256 | 58.2% | -0.381% | -38.09% |
-| VRTX | biotech | 304 | 54.6% | -0.543% | -54.28% |
-| AMZN | tech | 20 | 50.0% | -0.750% | -75.00% |
-| AAPL | tech | 89 | 46.1% | -0.927% | -92.70% |
-| REGN | biotech | 58 | 44.8% | -0.983% | -98.28% |
-| LLY | biotech | 63 | 39.7% | -1.214% | -121.43% |
-| META | tech | 5 | 20.0% | -2.100% | -210.00% |
+| BIIB | biotech | 0 | N/A | N/A | N/A |
+| REGN | biotech | 0 | N/A | N/A | N/A |
+| VRTX | biotech | 0 | N/A | N/A | N/A |
+| AAPL | tech | 14 | 57.1% | -0.429% | -42.86% |
+| AMZN | tech | 1 | 0.0% | -3.000% | -300.00% |
 
 ### Sector Aggregation (OOS breakeven threshold)
 
 | Sector | Trades | Win Rate | Avg Return | 100 Trades | OOS Profitable? |
 |--------|--------|:--------:|:----------:|:----------:|:---------------:|
-| tech | 5,512 | 72.0% | +0.241% | +24.11% | YES |
-| biotech | 4,930 | 71.3% | +0.207% | +20.66% | YES |
+| tech | 3,795 | 58.3% | -0.375% | -37.47% | no |
+| biotech | 3,101 | 55.9% | -0.484% | -48.37% | no |
 
 ---
 
 ## Verdict
 
-**OOS (training-adjacent):** At threshold 0.50, 10,442 trades, win rate 71.7%, avg return +0.225%/trade (+22.48% per 100 trades).  
-OOS win rate exceeds the 66.7% breakeven -- **profitable on training-adjacent data**.
+**OOS (training-adjacent):** At threshold 0.55, 6,896 trades, win rate 57.2%, avg return -0.424%/trade (-42.37% per 100 trades).  OOS win rate below 66.7% breakeven -- strategy not yet profitable even on OOS.
 
-**Holdout (2024+, clean):** 824 trades, win rate 53.0%, avg return -0.613%/trade (-61.35% per 100 trades).  
-Holdout win rate 53.0% < 66.7% breakeven -- **not yet profitable on genuinely unseen data**.
+**Holdout (2025+, clean):** 42 trades, win rate 69.0%, avg return +0.107%/trade (+10.71% per 100 trades).  **Holdout breakeven exceeded.**
 
 **Root cause of OOS/holdout gap:**  
 OOS precision (~71%) reflects historical Sideways periods the model was
@@ -111,7 +109,7 @@ With only ~304 holdout rows per ticker (~1.2 years), confidence intervals
 are wide. Re-evaluate once 2025-2026 data accumulates.
 
 **Best current candidate for cautious paper trading:**  
-- **BIIB** (biotech): holdout win rate 80.0% (5 trades), avg +0.600%/trade
+- **MSFT** (tech): holdout win rate 77.8% (27 trades), avg +0.500%/trade
 
 ---
 

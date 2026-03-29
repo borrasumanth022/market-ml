@@ -50,7 +50,7 @@ from config.tickers import SECTORS, TICKER_SECTOR
 
 PROCESSED_DIR = ROOT / "data" / "processed"
 DOCS_DIR      = ROOT / "docs"
-HOLDOUT_DATE  = pd.Timestamp("2024-01-01")
+HOLDOUT_DATE  = pd.Timestamp("2025-01-01")
 
 PREMIUM          = 0.015   # 1.5%  -- conservative weekly ATM iron condor credit
 LOSS             = 0.030   # 3.0%  -- max loss = 2x premium (wings triggered)
@@ -267,7 +267,33 @@ def print_sector_sweep(ticker_data: dict) -> None:
               f"{h_prec_s:>10}  {h_n:>7,}  {be_flag}")
 
     print(f"\n  Breakeven precision = {BREAKEVEN_PREC:.1%}")
-    print(f"  OOS breakeven met at 0.50 -- holdout NEVER meets breakeven at any threshold")
+    oos_be_t = next(
+        (t for t in THRESHOLDS
+         if t in oos_sweep.index
+         and not np.isnan(oos_sweep.loc[t, "precision"])
+         and oos_sweep.loc[t, "n_trades"] >= MIN_TRADES
+         and oos_sweep.loc[t, "precision"] >= BREAKEVEN_PREC),
+        None,
+    )
+    hold_be_t = next(
+        (t for t in THRESHOLDS
+         if t in hold_sweep.index
+         and not np.isnan(hold_sweep.loc[t, "precision"])
+         and hold_sweep.loc[t, "n_trades"] >= MIN_TRADES
+         and hold_sweep.loc[t, "precision"] >= BREAKEVEN_PREC),
+        None,
+    )
+    if oos_be_t is not None:
+        print(f"  OOS breakeven first met at {oos_be_t:.2f}  "
+              f"(prec={oos_sweep.loc[oos_be_t, 'precision']:.3f})")
+    else:
+        print(f"  OOS precision NEVER meets breakeven at any threshold")
+    if hold_be_t is not None:
+        print(f"  Holdout breakeven first met at {hold_be_t:.2f}  "
+              f"(prec={hold_sweep.loc[hold_be_t, 'precision']:.3f}, "
+              f"n={int(hold_sweep.loc[hold_be_t, 'n_trades'])} trades)")
+    else:
+        print(f"  Holdout precision NEVER meets breakeven at any threshold")
 
 
 def print_pnl_table(results: list, split_name: str, threshold: float) -> None:
@@ -494,12 +520,37 @@ def save_backtest_report(
     hold_trades_be = pd.concat(
         [r["hold_trade_rows"] for r in results_be if len(r["hold_trade_rows"]) > 0]
     ) if any(len(r["hold_trade_rows"]) > 0 for r in results_be) else pd.DataFrame()
-    hold_agg = iron_condor_pnl(hold_trades_be) if len(hold_trades_be) > 0 else {"win_rate": 0.0, "total_100": 0.0, "n_trades": 0}
+    _empty_pnl = {"n_trades": 0, "win_rate": 0.0, "avg_return": 0.0,
+                  "total_100": 0.0, "bh_avg_return": 0.0, "bh_total_100": 0.0}
+    hold_agg = iron_condor_pnl(hold_trades_be) if len(hold_trades_be) > 0 else _empty_pnl
 
     oos_trades_be = pd.concat(
         [r["oos_trade_rows"] for r in results_be if len(r["oos_trade_rows"]) > 0]
     )
     oos_agg = iron_condor_pnl(oos_trades_be)
+
+    oos_verdict = (
+        f"**OOS (training-adjacent):** At threshold {be_thresh:.2f}, "
+        f"{oos_agg['n_trades']:,} trades, win rate {oos_agg['win_rate']:.1%}, "
+        f"avg return {oos_agg['avg_return']:+.3%}/trade ({oos_agg['total_100']:+.2%} per 100 trades).  "
+    )
+    if oos_agg["win_rate"] >= BREAKEVEN_PREC:
+        oos_verdict += f"OOS win rate exceeds {BREAKEVEN_PREC:.1%} breakeven -- **profitable on training-adjacent data**."
+    else:
+        oos_verdict += f"OOS win rate below {BREAKEVEN_PREC:.1%} breakeven -- strategy not yet profitable even on OOS."
+
+    if hold_agg["n_trades"] > 0:
+        hold_verdict = (
+            f"**Holdout (2025+, clean):** {hold_agg['n_trades']} trades, "
+            f"win rate {hold_agg['win_rate']:.1%}, "
+            f"avg return {hold_agg['avg_return']:+.3%}/trade ({hold_agg['total_100']:+.2%} per 100 trades).  "
+        )
+        if hold_agg["win_rate"] >= BREAKEVEN_PREC:
+            hold_verdict += "**Holdout breakeven exceeded.**"
+        else:
+            hold_verdict += f"Holdout win rate below {BREAKEVEN_PREC:.1%} breakeven -- not yet profitable."
+    else:
+        hold_verdict = f"**Holdout (2025+, clean):** 0 trades at this threshold -- insufficient signal at {be_thresh:.2f}."
 
     lines += [
         "",
@@ -507,17 +558,9 @@ def save_backtest_report(
         "",
         "## Verdict",
         "",
-        f"**OOS (training-adjacent):** At threshold {be_thresh:.2f}, "
-        f"{oos_agg['n_trades']:,} trades, win rate {oos_agg['win_rate']:.1%}, "
-        f"avg return {oos_agg['avg_return']:+.3%}/trade ({oos_agg['total_100']:+.2%} per 100 trades).  ",
-        f"OOS win rate exceeds the {BREAKEVEN_PREC:.1%} breakeven -- "
-        "**profitable on training-adjacent data**.",
+        oos_verdict,
         "",
-        f"**Holdout (2024+, clean):** {hold_agg['n_trades']} trades, "
-        f"win rate {hold_agg['win_rate']:.1%}, "
-        f"avg return {hold_agg['avg_return']:+.3%}/trade ({hold_agg['total_100']:+.2%} per 100 trades).  ",
-        f"Holdout win rate {hold_agg['win_rate']:.1%} < {BREAKEVEN_PREC:.1%} breakeven -- "
-        "**not yet profitable on genuinely unseen data**.",
+        hold_verdict,
         "",
         "**Root cause of OOS/holdout gap:**  ",
         "OOS precision (~71%) reflects historical Sideways periods the model was",
@@ -598,13 +641,39 @@ def main() -> None:
 
     # 3. Find the two key thresholds
     prec_thresh = find_threshold(oos_sweep, PRECISION_TARGET, MIN_TRADES)
-    be_thresh   = find_threshold(oos_sweep, BREAKEVEN_PREC,   MIN_TRADES)
+    # For be_thresh: prefer OOS breakeven; fall back to holdout breakeven; then last threshold
+    oos_be_thresh  = find_threshold(oos_sweep,  BREAKEVEN_PREC, MIN_TRADES)
+    hold_be_thresh = find_threshold(hold_sweep, BREAKEVEN_PREC, MIN_TRADES)
+    # find_threshold returns THRESHOLDS[-1] as fallback -- check if it actually meets criteria
+    oos_be_met  = (oos_sweep.loc[oos_be_thresh, "precision"] >= BREAKEVEN_PREC
+                   and oos_sweep.loc[oos_be_thresh, "n_trades"] >= MIN_TRADES)
+    hold_be_met = (hold_sweep.loc[hold_be_thresh, "precision"] >= BREAKEVEN_PREC
+                   and hold_sweep.loc[hold_be_thresh, "n_trades"] >= MIN_TRADES)
+    if oos_be_met:
+        be_thresh = oos_be_thresh
+        be_source = "OOS"
+    elif hold_be_met:
+        be_thresh = hold_be_thresh
+        be_source = "Holdout"
+    else:
+        be_thresh = prec_thresh   # fall back to precision-flag threshold
+        be_source = "fallback (neither OOS nor holdout met breakeven)"
 
     section("Threshold Selection")
     print(f"  Precision-flag threshold ({PRECISION_TARGET:.0%}): {prec_thresh:.2f}  "
           f"(OOS precision={oos_sweep.loc[prec_thresh, 'precision']:.3f})")
-    print(f"  OOS-breakeven threshold ({BREAKEVEN_PREC:.1%}):  {be_thresh:.2f}  "
-          f"(OOS precision={oos_sweep.loc[be_thresh, 'precision']:.3f})")
+    if oos_be_met:
+        print(f"  OOS-breakeven threshold ({BREAKEVEN_PREC:.1%}):  {oos_be_thresh:.2f}  "
+              f"(OOS precision={oos_sweep.loc[oos_be_thresh, 'precision']:.3f})")
+    else:
+        print(f"  OOS precision never meets {BREAKEVEN_PREC:.1%} breakeven at any threshold")
+    if hold_be_met:
+        print(f"  Holdout-breakeven threshold ({BREAKEVEN_PREC:.1%}): {hold_be_thresh:.2f}  "
+              f"(Holdout precision={hold_sweep.loc[hold_be_thresh, 'precision']:.3f}, "
+              f"n={int(hold_sweep.loc[hold_be_thresh, 'n_trades'])} trades)")
+    else:
+        print(f"  Holdout precision never meets {BREAKEVEN_PREC:.1%} breakeven at any threshold")
+    print(f"  Simulation threshold: {be_thresh:.2f}  (source: {be_source})")
     h_prec_be = hold_sweep.loc[be_thresh, "precision"] if be_thresh in hold_sweep.index else float("nan")
     print(f"  Holdout precision at {be_thresh:.2f}: "
           f"{'N/A' if np.isnan(h_prec_be) else f'{h_prec_be:.3f}'}  "
@@ -617,7 +686,7 @@ def main() -> None:
     print_pnl_table(results_prec, "oos",     prec_thresh)
     print_sector_pnl(results_prec, "oos")
 
-    section(f"P&L Simulation at OOS-Breakeven Threshold ({be_thresh:.2f})")
+    section(f"P&L Simulation at Simulation Threshold ({be_thresh:.2f})")
     results_be = run_backtest(ticker_data, be_thresh)
     print_pnl_table(results_be, "oos",     be_thresh)
     print_pnl_table(results_be, "holdout", be_thresh)
@@ -631,28 +700,40 @@ def main() -> None:
 
     # 6. Final verdict
     section("Summary")
-    oos_all  = pd.concat([r["oos_trade_rows"]  for r in results_be if len(r["oos_trade_rows"]) > 0])
-    hold_all = pd.concat([r["hold_trade_rows"] for r in results_be if len(r["hold_trade_rows"]) > 0])
-    oos_agg  = iron_condor_pnl(oos_all)
-    hold_agg = iron_condor_pnl(hold_all)
+    oos_rows  = [r["oos_trade_rows"]  for r in results_be if len(r["oos_trade_rows"])  > 0]
+    hold_rows = [r["hold_trade_rows"] for r in results_be if len(r["hold_trade_rows"]) > 0]
+    oos_agg   = iron_condor_pnl(pd.concat(oos_rows))  if oos_rows  else iron_condor_pnl(pd.DataFrame())
+    hold_agg  = iron_condor_pnl(pd.concat(hold_rows)) if hold_rows else iron_condor_pnl(pd.DataFrame())
 
-    print(f"\n  At OOS-breakeven threshold ({be_thresh:.2f}):")
-    print(f"    OOS     : {oos_agg['n_trades']:,} trades  "
-          f"WR={oos_agg['win_rate']:.1%}  "
-          f"AvgRet={oos_agg['avg_return']:+.3%}  "
-          f"100T={oos_agg['total_100']:+.2%}")
-    print(f"    Holdout : {hold_agg['n_trades']:,} trades  "
-          f"WR={hold_agg['win_rate']:.1%}  "
-          f"AvgRet={hold_agg['avg_return']:+.3%}  "
-          f"100T={hold_agg['total_100']:+.2%}")
+    print(f"\n  At simulation threshold ({be_thresh:.2f}, source: {be_source}):")
+    if oos_agg["n_trades"] > 0:
+        print(f"    OOS     : {oos_agg['n_trades']:,} trades  "
+              f"WR={oos_agg['win_rate']:.1%}  "
+              f"AvgRet={oos_agg['avg_return']:+.3%}  "
+              f"100T={oos_agg['total_100']:+.2%}")
+    else:
+        print(f"    OOS     : 0 trades at this threshold")
+    if hold_agg["n_trades"] > 0:
+        print(f"    Holdout : {hold_agg['n_trades']:,} trades  "
+              f"WR={hold_agg['win_rate']:.1%}  "
+              f"AvgRet={hold_agg['avg_return']:+.3%}  "
+              f"100T={hold_agg['total_100']:+.2%}")
+    else:
+        print(f"    Holdout : 0 trades at this threshold")
     print(f"\n  Breakeven win rate: {BREAKEVEN_PREC:.1%}")
 
-    if hold_agg["win_rate"] >= BREAKEVEN_PREC:
-        print(f"  [OK] Holdout WR {hold_agg['win_rate']:.1%} exceeds breakeven")
+    if hold_agg["n_trades"] == 0:
+        print(f"  [WARN] 0 holdout trades at threshold {be_thresh:.2f} -- threshold too tight")
+        print(f"  [NOTE] Holdout breakeven first met: "
+              f"{hold_be_thresh:.2f} (prec={hold_sweep.loc[hold_be_thresh, 'precision']:.3f})"
+              if hold_be_met else
+              f"  [NOTE] Holdout precision does not meet breakeven at any threshold")
+    elif hold_agg["win_rate"] >= BREAKEVEN_PREC:
+        print(f"  [OK] Holdout WR {hold_agg['win_rate']:.1%} exceeds {BREAKEVEN_PREC:.1%} breakeven"
+              f" -- strategy profitable on 2025+ holdout data")
     else:
-        print(f"  [WARN] Holdout WR {hold_agg['win_rate']:.1%} below breakeven "
-              f"-- not yet profitable on 2024+ data")
-        print(f"  [NOTE] OOS profitable: next step is accumulating 2025-2026 holdout data")
+        print(f"  [WARN] Holdout WR {hold_agg['win_rate']:.1%} below {BREAKEVEN_PREC:.1%} breakeven"
+              f" -- not yet profitable on holdout")
     print()
 
 
