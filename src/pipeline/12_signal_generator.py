@@ -599,6 +599,48 @@ def predict_ticker(
     }
 
 
+# ── Iron condor strike calculator ────────────────────────────────────────────
+
+def next_friday(signal_date: pd.Timestamp) -> pd.Timestamp:
+    """Return the Friday of the same week as signal_date (signal_date is always Monday)."""
+    return signal_date + pd.Timedelta(days=4)
+
+
+def compute_iron_condor_strikes(
+    current_price: float,
+    signal_date:   pd.Timestamp,
+) -> dict:
+    """
+    Compute suggested iron condor strikes for a FIRE signal.
+
+    Structure (standard 2%/4% wings):
+      Sell call 2% OTM  |  Buy call 4% OTM   (call spread)
+      Sell put  2% OTM  |  Buy put  4% OTM   (put spread)
+
+    Premium and max-loss are per-share estimates based on fixed
+    1.5% / 3.0% assumptions used throughout the backtest.
+    Expiry is always the Friday of the signal week.
+
+    Returns dict with 7 keys for inclusion in the signal log.
+    """
+    short_call     = round(current_price * 1.02, 0)
+    long_call      = round(current_price * 1.04, 0)
+    short_put      = round(current_price * 0.98, 0)
+    long_put       = round(current_price * 0.96, 0)
+    premium_target = round(current_price * 0.015, 2)
+    max_loss       = round(current_price * 0.030, 2)
+    expiry         = next_friday(signal_date)
+    return {
+        "short_call_strike": short_call,
+        "long_call_strike":  long_call,
+        "short_put_strike":  short_put,
+        "long_put_strike":   long_put,
+        "premium_target":    premium_target,
+        "max_loss_estimate": max_loss,
+        "expiry_date":       expiry,
+    }
+
+
 # ── Kelly sizing ──────────────────────────────────────────────────────────────
 
 def kelly_sizing() -> tuple:
@@ -667,6 +709,7 @@ def build_signal_row(
     pred:            dict,
     regime_feats:    pd.Series,
     model_label:     str,
+    current_price:   "float | None" = None,
     force_no_fire:   bool = False,
     notes:           str  = "",
 ) -> dict:
@@ -674,12 +717,28 @@ def build_signal_row(
     Build one signal log row.
     force_no_fire=True: suppress FIRE even if proba_side >= SIGNAL_THRESHOLD
                         (used for excluded tickers and cap-suppressed signals).
+    current_price: last close price; required for iron condor strike calculation
+                   on FIRE signals.  None produces NaN strike columns.
     """
     proba_side = pred["proba_sideways"]
     signal     = "NO_FIRE" if force_no_fire else (
         "FIRE" if proba_side >= SIGNAL_THRESHOLD else "NO_FIRE"
     )
     kelly_frac, rec_size = kelly_sizing() if signal == "FIRE" else (0.0, 0.0)
+
+    # Iron condor strikes (FIRE signals with a known price only)
+    if signal == "FIRE" and current_price is not None:
+        strikes = compute_iron_condor_strikes(current_price, signal_date)
+    else:
+        strikes = {
+            "short_call_strike": None,
+            "long_call_strike":  None,
+            "short_put_strike":  None,
+            "long_put_strike":   None,
+            "premium_target":    None,
+            "max_loss_estimate": None,
+            "expiry_date":       None,
+        }
 
     return {
         "signal_date":          signal_date,
@@ -700,6 +759,8 @@ def build_signal_row(
         "model_version":        model_label,
         "actual_outcome":       "",    # filled in after 5 trading days
         "notes":                notes,
+        # Iron condor strikes (populated for FIRE signals; None for NO_FIRE)
+        **strikes,
     }
 
 
@@ -712,6 +773,10 @@ def save_signal_log(signal_rows: list) -> None:
     """
     SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = SIGNALS_DIR / "signal_log.parquet"
+
+    if not signal_rows:
+        print("  [SKIP] No new signal rows to write (all tickers already logged this week).")
+        return
 
     new_df = pd.DataFrame(signal_rows)
     new_df["signal_date"]      = pd.to_datetime(new_df["signal_date"])
@@ -763,16 +828,31 @@ def print_signal_report(
 
     if fire_rows:
         print(f"  FIRE signals (threshold {SIGNAL_THRESHOLD}):")
-        hdr = f"  {'Ticker':6}  {'Confidence':>10}  {'Regime':12}  {'Kelly Size':>10}"
-        print(hdr)
-        print("  " + "-" * (len(hdr) - 2))
         for r in sorted(fire_rows, key=lambda x: x["proba_sideways"], reverse=True):
             print(
                 f"  {r['ticker']:6}  "
-                f"{r['proba_sideways']:>10.3f}  "
-                f"{r['regime_label']:12}  "
-                f"{r['recommended_size_pct']:>9.1f}%"
+                f"Confidence={r['proba_sideways']:.2f}  "
+                f"Regime={r['regime_label']}  "
+                f"Kelly Size={r['recommended_size_pct']:.1f}%"
             )
+            sc = r.get("short_call_strike")
+            if sc is not None:
+                lc  = r["long_call_strike"]
+                sp  = r["short_put_strike"]
+                lp  = r["long_put_strike"]
+                pt  = r["premium_target"]
+                ml  = r["max_loss_estimate"]
+                exp = r["expiry_date"]
+                exp_str = exp.date() if hasattr(exp, "date") else str(exp)
+                print(
+                    f"    Iron Condor: Sell ${sc:.0f}C/Buy ${lc:.0f}C"
+                    f" -- Sell ${sp:.0f}P/Buy ${lp:.0f}P"
+                )
+                print(
+                    f"    Premium target: ~${pt:.2f}  "
+                    f"Max loss: ~${ml:.2f}  "
+                    f"Expiry: {exp_str}"
+                )
     else:
         print(f"  No FIRE signals at threshold {SIGNAL_THRESHOLD}")
 
@@ -889,6 +969,7 @@ def main() -> None:
             row  = build_signal_row(
                 signal_date, actual_date, ticker, pred, regime_feats,
                 model_labels[ticker],
+                current_price=float(feature_row["close"]),
                 force_no_fire=True,
                 notes="excluded: weak OOS F1 (EXCLUDED_FROM_SIGNALS)",
             )
@@ -914,6 +995,7 @@ def main() -> None:
         row = build_signal_row(
             signal_date, actual_date, ticker, pred, regime_feats,
             model_labels[ticker],
+            current_price=float(feature_row["close"]),
             force_no_fire=cap_suppressed,
             notes=f"cap suppressed: {cap_reason}" if cap_suppressed else "",
         )
