@@ -1,16 +1,24 @@
 """
 Step 13 -- Automated Outcome Tracker
 =====================================
-Runs every Friday to score the previous week's FIRE signals and maintain
-a running paper trading scorecard.
+Intended schedule: run every Friday after market close.
+Safe to run on any day -- see timing edge-case handling below.
 
-For each FIRE signal in data/signals/signal_log.parquet where actual_outcome
-is blank and the trade week has fully elapsed (signal_date + 7 calendar days
-<= today):
-  - Fetch that ticker's OHLCV via yfinance for the trade week
-  - Entry price : Monday open  (next business day after signal_date)
-  - Exit price  : Friday close (4 business days after entry)
-  - actual_return = (exit_close - monday_open) / monday_open
+Timing edge cases handled:
+  Run on non-Friday     : scores any FIRE signal at least 5 trading days old
+                          regardless of what day today is. Always safe.
+  Missed a Friday       : next run scores all unscored signals older than 5
+                          trading days in one batch. No data is ever lost.
+  Too early in the week : signals from this week (exit Friday not yet reached)
+                          are skipped. Prints "X signals pending -- too early
+                          to score (exit date: YYYY-MM-DD)".
+  No signals to score   : prints current scorecard from resolved trades and exits.
+  Ran same day as signal generator: independent scripts, always safe together.
+
+For each FIRE signal where actual_outcome is blank and exit Friday <= today:
+  - Entry price : Monday open  (signal_date if Monday; next BDay if old Friday format)
+  - Exit price  : Friday close (signal_date + 4 BDays)
+  - actual_return = (friday_close - monday_open) / monday_open
   - WIN  if abs(return) <= 2% -> actual_direction = Sideways
   - LOSS if return >  +2%     -> actual_direction = Bull
   - LOSS if return <  -2%     -> actual_direction = Bear
@@ -22,8 +30,6 @@ Fails loudly if signal_log.parquet does not exist.
 
 Usage:
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\13_outcome_tracker.py
-
-Recommended schedule: run every Friday after market close.
 """
 
 import sys
@@ -76,13 +82,20 @@ def is_blank(val) -> bool:
 
 def trade_window(signal_date: pd.Timestamp) -> tuple:
     """
-    Return (entry_monday, exit_friday) for the trade week that follows signal_date.
-    signal_date is always a Friday (last Friday in signal_log).
-    entry = next business day after signal_date (Monday, or Tuesday after a holiday)
-    exit  = entry + 4 business days (Friday, or next available)
+    Return (entry_monday, exit_friday) for the trade that corresponds to signal_date.
+
+    Handles two log formats for backward compatibility:
+      NEW (Step 13+): signal_date = Monday  -> entry = Monday, exit = Monday + 4 BDays
+      OLD (Step 12 original): signal_date = Friday -> entry = next Monday, exit = that Friday
+
+    Both formats produce the same physical trade window; only the index key differs.
     """
-    entry = signal_date + pd.offsets.BDay(1)
-    exit_ = entry + pd.offsets.BDay(4)
+    if signal_date.weekday() == 4:   # Friday -- old format written before Step 13 timing fix
+        entry = signal_date + pd.offsets.BDay(1)   # next Monday
+        exit_ = entry + pd.offsets.BDay(4)          # that Friday
+    else:                             # Monday -- new canonical format
+        entry = signal_date                          # Monday IS entry day
+        exit_ = signal_date + pd.offsets.BDay(4)   # that Friday
     return entry, exit_
 
 
@@ -253,8 +266,11 @@ def print_scorecard(
             best  = max(scored, key=lambda x: (x[5],  x[3]))
             worst = min(scored, key=lambda x: (x[5], -x[3]))
             print()
-            print(f"  Best ticker : {best[0]:6}  ({best[4]}/{best[3]} wins, {best[5]:.1f}%)")
-            print(f"  Worst ticker: {worst[0]:6}  ({worst[4]}/{worst[3]} wins, {worst[5]:.1f}%)")
+            if best[5] == worst[5]:
+                print(f"  All resolved tickers tied at {best[5]:.1f}% win rate")
+            else:
+                print(f"  Best ticker : {best[0]:6}  ({best[4]}/{best[3]} wins, {best[5]:.1f}%)")
+                print(f"  Worst ticker: {worst[0]:6}  ({worst[4]}/{worst[3]} wins, {worst[5]:.1f}%)")
         elif len(scored) == 1:
             t = scored[0]
             print()
@@ -269,7 +285,11 @@ def main() -> None:
     today = pd.Timestamp.today().normalize()
 
     section("ManthIQ Step 13 -- Outcome Tracker")
-    print(f"  Run date   : {today.date()}")
+    day_name = today.strftime("%A")
+    print(f"  Run date   : {today.date()} ({day_name})")
+    if today.weekday() != 4:   # not Friday
+        print(f"  [WARN] Expected schedule: Friday after market close.")
+        print(f"         Scoring any FIRE signals with exit date <= {today.date()}.")
     print(f"  Signal log : {LOG_PATH.relative_to(ROOT)}")
 
     # ── 1. Load signal log ─────────────────────────────────────────────────────
@@ -318,22 +338,26 @@ def main() -> None:
     fire_mask    = log["signal"] == "FIRE"
     unscored     = log[fire_mask & log["actual_outcome"].apply(is_blank)].copy()
 
-    # A trade is scoreable once the full trade week has elapsed:
-    # exit Friday = signal_date + 1 BDay (Monday) + 4 BDay (Friday) = +5 BDays
-    # We require today > exit Friday (data confirmed after market close)
+    # A trade is scoreable once its exit Friday has been reached.
+    # exit = signal_date + 4 BDays for Monday signals (new format)
+    #        signal_date + 5 BDays for Friday signals (old format, handled in trade_window)
+    # Require today >= exit_friday so Friday-evening runs can score that week's trades.
     def exit_date_of(sd: pd.Timestamp) -> pd.Timestamp:
-        return sd + pd.offsets.BDay(1) + pd.offsets.BDay(4)
+        _, ex = trade_window(sd)
+        return ex
 
-    eligible = unscored[
-        unscored.index.map(exit_date_of) < today
-    ]
+    exit_dates   = unscored.index.map(exit_date_of)
+    eligible     = unscored[exit_dates <= today]
+    too_early    = unscored[exit_dates >  today]
+
+    if not too_early.empty:
+        earliest_exit = exit_dates[exit_dates > today].min()
+        print(f"  {len(too_early)} signal(s) pending -- too early to score "
+              f"(exit date: {earliest_exit.date()})")
 
     if eligible.empty:
-        print(f"  No outcomes to resolve this run.")
-        print(f"  (Pending unscored FIRE signals: {len(unscored)})")
-        if len(unscored) > 0:
-            next_exit = unscored.index.map(exit_date_of).min()
-            print(f"  Next eligible scoring date: {next_exit.date()}")
+        if too_early.empty:
+            print(f"  No outcomes to resolve this run.")
         print_scorecard(log, resolved_this_run=0, run_date=today)
         return
 

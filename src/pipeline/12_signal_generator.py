@@ -1,7 +1,16 @@
 """
 Step 12 -- Weekly Iron Condor Signal Generator (Paper Trading Engine)
 =====================================================================
-Runs every Monday morning (or any day, with a warning if not Monday).
+Intended schedule: run every Monday morning.
+Safe to run on any day -- see timing edge-case handling below.
+
+Timing edge cases handled:
+  Run on non-Monday      : uses most recent Monday as signal_date; prints WARNING.
+  Run twice same week    : detects existing (signal_date, ticker) rows in log and
+                           skips them silently -- no duplicate entries written.
+  Missed several Mondays : only generates signals for the current week; prints how
+                           many Mondays were missed; does NOT backfill past weeks.
+
 Loads the trained models, fetches the latest weekly OHLCV for all 27 tickers,
 computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + optional sector extras),
 and outputs iron condor signals at confidence threshold 0.65.
@@ -59,6 +68,7 @@ from config.tickers import SECTORS, TICKER_SECTOR
 # ── Paths ──────────────────────────────────────────────────────────────────────
 PROCESSED_DIR = ROOT / "data" / "processed"
 SIGNALS_DIR   = ROOT / "data" / "signals"
+LOG_PATH      = SIGNALS_DIR / "signal_log.parquet"
 MODELS_DIR    = ROOT / "models"
 FDA_EVENTS    = ROOT / "data" / "events" / "biotech" / "fda_events.parquet"
 
@@ -142,29 +152,73 @@ def section(title: str) -> None:
 
 def get_signal_date() -> pd.Timestamp:
     """
-    Return the most recent Friday as the signal date.
-    If today is Monday: expected production run -- no warning.
-    If today is not Monday: print warning (script works fine either way).
-    The actual date used is the latest trading day at or before last Friday,
-    confirmed against real OHLCV data after fetching.
+    Return the most recent Monday as signal_date.
+    Monday is the canonical signal date: the model is run on Monday morning
+    using Friday's close data, and the trade runs Monday open -> Friday close.
+
+    Edge cases:
+      Run on Monday             : signal_date = today (expected, no warning).
+      Run Tue-Sun (off-schedule): signal_date = most recent Monday; prints WARNING.
+      Run on Mon after a holiday: signal_date = today (Monday is still Monday).
+
+    The actual_data_date column in the log records which market date's data
+    was used (usually Friday's close, since Monday morning markets aren't open yet).
     """
     today = pd.Timestamp.today().normalize()
     # weekday(): Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
-    days_since_friday = (today.weekday() - 4) % 7
-    if days_since_friday == 0:
-        last_friday = today   # today IS Friday
-    else:
-        last_friday = today - pd.Timedelta(days=days_since_friday)
+    days_since_monday = today.weekday()   # 0 on Monday, 1 on Tuesday, etc.
+    # Saturday (5) and Sunday (6) look back to the previous Monday
+    last_monday = today - pd.Timedelta(days=days_since_monday)
 
     day_name = today.strftime("%A")
-    if today.weekday() == 0:  # Monday
+    if today.weekday() == 0:   # Monday -- expected production run
         print(f"  [OK]  Running on {day_name} {today.date()}.")
-        print(f"        Signal date: last Friday {last_friday.date()}")
+        print(f"        Signal date: {last_monday.date()}")
     else:
-        print(f"  [WARN] Today is {day_name} {today.date()} -- not Monday.")
-        print(f"  [WARN] Expected Monday morning for paper trading.")
-        print(f"  [WARN] Using last Friday {last_friday.date()} as signal date.")
-    return last_friday
+        print(f"  [WARN] WARNING: Running on {day_name}, "
+              f"using last Monday {last_monday.date()} as signal date")
+        print(f"  [WARN] Expected schedule: Monday morning.")
+    return last_monday
+
+
+def load_existing_keys() -> set:
+    """
+    Load (signal_date, ticker) pairs already in signal_log.parquet.
+    Returns an empty set if the log does not exist or cannot be read.
+    Used to skip duplicate entries silently when re-run in the same week.
+    """
+    if not LOG_PATH.exists():
+        return set()
+    try:
+        log = pd.read_parquet(LOG_PATH, engine="pyarrow")
+        log.index = pd.to_datetime(log.index).normalize()
+        return set(zip(log.index, log["ticker"]))
+    except Exception:
+        return set()
+
+
+def count_missed_mondays(signal_date: pd.Timestamp) -> int:
+    """
+    Return how many Mondays were skipped between the last logged signal_date
+    and the current signal_date.  0 means the last run was the previous week.
+    """
+    if not LOG_PATH.exists():
+        return 0
+    try:
+        log = pd.read_parquet(LOG_PATH, engine="pyarrow")
+        log.index = pd.to_datetime(log.index).normalize()
+        if log.empty:
+            return 0
+        last_date = log.index.max().normalize()
+        # Only meaningful if last_date was also a Monday-keyed entry.
+        # weeks_apart - 1 = missed Mondays (0 if consecutive weeks).
+        days_apart = (signal_date - last_date).days
+        if days_apart <= 0:
+            return 0
+        weeks_apart = days_apart // 7
+        return max(0, weeks_apart - 1)
+    except Exception:
+        return 0
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────
@@ -742,6 +796,18 @@ def main() -> None:
     section("Signal Date")
     signal_date = get_signal_date()
 
+    # Check for duplicate week and missed Mondays before any expensive fetching
+    existing_keys = load_existing_keys()
+    this_week_keys = {k for k in existing_keys if k[0] == signal_date}
+    if this_week_keys:
+        print(f"  [WARN] {len(this_week_keys)} ticker(s) already logged for "
+              f"{signal_date.date()} -- duplicates will be skipped silently.")
+
+    missed = count_missed_mondays(signal_date)
+    if missed > 0:
+        print(f"  [WARN] {missed} Monday(s) missed since last run. "
+              f"Generating signals for current week only -- no backfill.")
+
     # ── 2. Load models ─────────────────────────────────────────────────────────
     section("Loading Models")
     ticker_models = load_models()
@@ -800,6 +866,10 @@ def main() -> None:
 
     for ticker in ALL_TICKERS:
         print(f"\n  [{TICKER_SECTOR[ticker].upper()}] {ticker}")
+
+        # -- Duplicate check: skip silently if already logged for this week --
+        if (signal_date, ticker) in existing_keys:
+            continue
 
         # -- Exclusion check (before expensive feature computation) --
         if ticker in EXCLUDED_FROM_SIGNALS:
