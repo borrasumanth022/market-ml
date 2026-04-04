@@ -57,8 +57,9 @@ import yfinance as yf
 from config.tickers import SECTORS, TICKER_SECTOR
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROCESSED_DIR = ROOT / "data" / "processed"
-FDA_EVENTS    = ROOT / "data" / "events" / "biotech" / "fda_events.parquet"
+PROCESSED_DIR    = ROOT / "data" / "processed"
+FDA_EVENTS       = ROOT / "data" / "events" / "biotech"     / "fda_events.parquet"
+CREDIT_SPREADS   = ROOT / "data" / "events" / "financials"  / "credit_spreads.parquet"
 
 # ── Constants (inherited from aapl_ml settings) ───────────────────────────────
 CAP_EARNINGS     = 90      # sentinel days when no earnings history exists
@@ -375,6 +376,60 @@ def add_fda_features(feat: pd.DataFrame, fda_df: pd.DataFrame, ticker: str) -> N
     feat["fda_approval_rate_trailing"] = approval_rates
 
 
+def add_credit_spread_features(feat: pd.DataFrame) -> None:
+    """
+    Group E -- Credit spread features (financials sector only).
+    Source: FRED BAMLH0A0HYM2 -- ICE BofA US HY Index OAS, saved by 04_events.py.
+    Coverage: 1996-12-31 onwards.  Pre-coverage rows filled with sentinel 0.0.
+
+    Features added:
+      credit_spread_level    : daily OAS value (percent, e.g. 3.5 = 350 bps)
+      credit_spread_change_1m: 21-trading-day change in OAS
+      credit_spread_zscore   : 63-day rolling z-score (0.0 sentinel pre-1996)
+    """
+    trading_dates = feat.index
+
+    if not CREDIT_SPREADS.exists():
+        print(f"    [WARN] credit_spreads.parquet not found -- "
+              f"run 04_events.py first (sentinel 0.0 used)")
+        feat["credit_spread_level"]     = 0.0
+        feat["credit_spread_change_1m"] = 0.0
+        feat["credit_spread_zscore"]    = 0.0
+        return
+
+    cs_df = pd.read_parquet(CREDIT_SPREADS, engine="pyarrow")
+    cs_df.index = pd.to_datetime(cs_df.index).normalize()
+    cs_level = cs_df["credit_spread_level"]
+
+    # Forward-fill daily values onto trading dates (handles weekends/holidays)
+    cs_aligned = (
+        cs_level
+        .reindex(cs_level.index.union(trading_dates))
+        .sort_index()
+        .ffill()
+        .reindex(trading_dates)
+    )
+
+    # Sentinel: rows before first valid date get 0.0
+    feat["credit_spread_level"] = cs_aligned.fillna(0.0).values
+
+    # 21-day change (forward-filled series, so shift is valid)
+    cs_change = cs_aligned - cs_aligned.shift(21)
+    feat["credit_spread_change_1m"] = cs_change.fillna(0.0).values
+
+    # 63-day rolling z-score; NaN for first 62 rows -> 0.0 sentinel
+    roll_mean = cs_aligned.rolling(63, min_periods=63).mean()
+    roll_std  = cs_aligned.rolling(63, min_periods=63).std()
+    cs_zscore = (cs_aligned - roll_mean) / (roll_std + 1e-9)
+    feat["credit_spread_zscore"] = cs_zscore.fillna(0.0).values
+
+    n_valid     = cs_aligned.notna().sum()
+    first_valid = cs_aligned.first_valid_index()
+    cov_pct     = n_valid / len(trading_dates) * 100
+    print(f"    credit spread: {n_valid:,}/{len(trading_dates):,} obs ({cov_pct:.1f}%), "
+          f"first valid: {first_valid.date() if first_valid else 'N/A'}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Coverage report
 # ══════════════════════════════════════════════════════════════════════════════
@@ -445,6 +500,12 @@ def process_ticker(
     if is_biotech:
         section("D. FDA decision features (biotech)")
         add_fda_features(feat, fda_df, ticker)
+
+    # D2. Credit spread (financials only)
+    is_financials = (sector == "financials")
+    if is_financials:
+        section("D2. Credit spread features (financials)")
+        add_credit_spread_features(feat)
 
     # E. Regime features from Step 11 (VIX, yield spread, sentiment, breadth, HMM)
     if regime_df is not None and len(regime_df) > 0:

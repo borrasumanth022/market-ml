@@ -17,7 +17,13 @@ SECTORS = {
         "description": "Large cap biotech and pharma",
         "universal_events": ["fed_rate", "cpi"],
         "sector_events": ["fda_pdufa", "clinical_trials", "drug_approvals"],
-    }
+    },
+    "financials": {
+        "tickers": ["JPM", "GS", "BAC", "MS", "WFC"],
+        "description": "Large cap US banks and investment banks",
+        "universal_events": ["fed_rate", "yield_curve", "credit_spreads"],
+        "sector_events": [],
+    },
 }
 
 # Sector each ticker belongs to

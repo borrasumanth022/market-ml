@@ -49,8 +49,9 @@ import requests
 from config.tickers import SECTORS, TICKER_SECTOR
 
 # ── Output paths ───────────────────────────────────────────────────────────────
-UNIVERSAL_DIR = ROOT / "data" / "events" / "universal"
-BIOTECH_DIR   = ROOT / "data" / "events" / "biotech"
+UNIVERSAL_DIR   = ROOT / "data" / "events" / "universal"
+BIOTECH_DIR     = ROOT / "data" / "events" / "biotech"
+FINANCIALS_DIR  = ROOT / "data" / "events" / "financials"
 
 # ── API constants ──────────────────────────────────────────────────────────────
 FRED_BASE       = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
@@ -477,6 +478,49 @@ fda_df = to_parquet(fda_rows, BIOTECH_DIR / "fda_events.parquet", "FDA biotech e
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PART C — Credit Spread (BAMLH0A0HYM2) for Financials sector
+# ══════════════════════════════════════════════════════════════════════════════
+
+section("PART C -- BAMLH0A0HYM2 Credit Spread (Financials)")
+
+print("""
+  Source: FRED BAMLH0A0HYM2 -- ICE BofA US High Yield Index Option-Adjusted Spread
+  Units:  percent (OAS, effectively basis points / 100)
+  Coverage: 1996-12-31 onwards. Pre-1996 dates filled with sentinel 0.0 in 05_event_features.py.
+  Saved to: data/events/financials/credit_spreads.parquet
+""")
+
+cs_path = FINANCIALS_DIR / "credit_spreads.parquet"
+
+try:
+    print("  Fetching BAMLH0A0HYM2 ...", end=" ", flush=True)
+    cs_raw = fetch_fred("BAMLH0A0HYM2")
+    cs_raw = cs_raw[cs_raw.index >= "1993-01-01"]
+
+    # Forward-fill weekends/holidays to get a contiguous daily series
+    full_idx = pd.date_range(cs_raw.index[0], cs_raw.index[-1], freq="D")
+    cs_daily = cs_raw.reindex(full_idx).ffill().dropna()
+    cs_daily.index.name = "date"
+
+    # Build a single-column DataFrame that 05_event_features.py can read
+    cs_df = pd.DataFrame({"credit_spread_level": cs_daily})
+    cs_df.index = pd.to_datetime(cs_df.index).normalize()
+    cs_df.index.name = "date"
+
+    FINANCIALS_DIR.mkdir(parents=True, exist_ok=True)
+    cs_df.to_parquet(cs_path, engine="pyarrow")
+    size_kb = cs_path.stat().st_size / 1024
+    print(f"OK  ({len(cs_df):,} obs, {cs_df.index[0].date()} to {cs_df.index[-1].date()})")
+    print(f"\n  Saved credit_spreads: {len(cs_df):,} daily rows -> "
+          f"{cs_path.relative_to(ROOT)} ({size_kb:.0f} KB)")
+    print(f"  First valid date: {cs_df.index[0].date()}  "
+          f"(rows before 1996-12-31 are pre-coverage, sentinel applied in step 5)")
+except Exception as exc:
+    print(f"FAILED: {exc}")
+    print("  [WARN] credit_spreads.parquet not saved -- financials features will use sentinel 0.0")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -511,4 +555,6 @@ if not fda_df.empty:
 print(f"\n  Files written:")
 print(f"    {(UNIVERSAL_DIR / 'macro_events.parquet').relative_to(ROOT)}")
 print(f"    {(BIOTECH_DIR / 'fda_events.parquet').relative_to(ROOT)}")
+if cs_path.exists():
+    print(f"    {cs_path.relative_to(ROOT)}")
 print(f"\nStep 4 complete. Next step: src/pipeline/05_event_features.py\n")

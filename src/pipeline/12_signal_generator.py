@@ -2,18 +2,19 @@
 Step 12 -- Weekly Iron Condor Signal Generator (Paper Trading Engine)
 =====================================================================
 Runs every Monday morning (or any day, with a warning if not Monday).
-Loads the trained models, fetches the latest weekly OHLCV for all 22 tickers,
-computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + FDA_5),
-and outputs iron condor signals at confidence threshold 0.55.
+Loads the trained models, fetches the latest weekly OHLCV for all 27 tickers,
+computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + optional sector extras),
+and outputs iron condor signals at confidence threshold 0.65.
 Appends every signal (FIRE or NO_FIRE) to data/signals/signal_log.parquet.
 
 Signal rule:
-  FIRE    : model predicts Sideways with proba_side >= SIGNAL_THRESHOLD (0.55)
+  FIRE    : model predicts Sideways with proba_side >= SIGNAL_THRESHOLD (0.65)
   NO_FIRE : proba_side < SIGNAL_THRESHOLD
 
-Models used (Phase 1c -- v2):
-  tech    (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl        (71 features)
-  biotech (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl  (74 features)
+Models used (Phase 2):
+  tech       (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl         (71 features)
+  biotech    (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl   (74 features)
+  financials  (5 tickers) -> models/financials/xgb_financials_shared_v1.pkl (67 features)
   VRTX finetuned v1 RETIRED: v2 shared biotech now routes VRTX (holdout F1 0.410).
     The finetuned model's +0.043 advantage was measured on 2024 data (now in training).
   Each model stores its own feature_names list -- the feature vector is built
@@ -23,8 +24,8 @@ Kelly Criterion position sizing (half-Kelly, capped at 20% of portfolio):
   kelly_fraction   = (WIN_RATE / AVG_LOSS) - (LOSS_RATE / AVG_WIN)
   recommended_size = min(kelly_fraction * 0.5, MAX_POSITION_PCT)
 
-  Using WIN_RATE = 0.69 from Phase 1c holdout backtest (61 trades at threshold 0.55, WR=67.2%).
-  Keeping 0.69 as conservative estimate; actual Phase 1c WR is 67.2%.
+  Using WIN_RATE = 0.677 from Phase 2 OOS backtest (4,657 trades at threshold 0.65, WR=67.7%).
+  Threshold 0.65 is the first OOS breakeven threshold (66.7%) in the Phase 2 universe.
 
 Known approximations:
   - macro_stress_score z-score computed over the 500-day OHLCV window, not the
@@ -62,12 +63,12 @@ MODELS_DIR    = ROOT / "models"
 FDA_EVENTS    = ROOT / "data" / "events" / "biotech" / "fda_events.parquet"
 
 # ── Strategy constants ────────────────────────────────────────────────────────
-SIGNAL_THRESHOLD = 0.55
+SIGNAL_THRESHOLD = 0.65
 PREMIUM          = 0.015    # iron condor credit per unit
 LOSS_MAX         = 0.030    # max loss per unit if wings triggered
 
-# Kelly inputs from Phase 1c holdout backtest (61 trades, threshold 0.55)
-WIN_RATE         = 0.69
+# Kelly inputs from Phase 2 OOS backtest (4,657 trades at threshold 0.65, WR=67.7%)
+WIN_RATE         = 0.677
 LOSS_RATE        = 1.0 - WIN_RATE
 AVG_WIN          = PREMIUM
 AVG_LOSS         = LOSS_MAX
@@ -78,6 +79,20 @@ MAX_POSITION_PCT = 0.20     # 20% portfolio cap per position
 REGIME_LABELS  = {0: "range-bound", 1: "trending", 2: "volatile"}
 SIDEWAYS_CLASS = 1
 CLASS_NAMES    = ["Bear", "Sideways", "Bull"]
+
+# Tickers excluded from live signal generation (remain in training).
+# Reason: consistently weak OOS F1 (>0.05 below sector avg across v1 and v2).
+# AMD:  F1=0.344 (-0.053), high idiosyncratic volatility
+# TSLA: F1=0.338 (-0.059), extreme volatility + short history (IPO 2010)
+# MRNA: F1=0.329 (-0.080), very short history (IPO 2018, only 1,327 OOS rows)
+EXCLUDED_FROM_SIGNALS = {"AMD", "TSLA", "MRNA"}
+
+# 8-week rolling trade cap -- prevents one ticker dominating signals
+# No single ticker may represent >= CAP_MAX_SHARE of fires in the last CAP_WEEKS.
+# Only activates once CAP_MIN_TRADES fire signals exist in the window.
+CAP_WEEKS      = 8
+CAP_MAX_SHARE  = 0.20   # 20%
+CAP_MIN_TRADES = 5      # minimum fires in window before cap activates
 
 # Fetch 500 trading days of OHLCV for rolling-feature warmup
 # (need 252 for price_52w_pct, 200 for sma_200; 500 gives plenty of buffer)
@@ -110,7 +125,8 @@ _build_tech_features = _feat_mod.build_features          # (df, ticker) -> pd.Da
 _add_earnings        = _event_mod.add_earnings_features   # (feat, ticker) -> None
 _add_macro           = _event_mod.add_macro_features      # (feat, fred) -> None
 _add_regime_stress   = _event_mod.add_regime_features     # (feat) -> None (rate env/inflation/stress)
-_add_fda             = _event_mod.add_fda_features        # (feat, fda_df, ticker) -> None
+_add_fda             = _event_mod.add_fda_features          # (feat, fda_df, ticker) -> None
+_add_credit_spread   = _event_mod.add_credit_spread_features  # (feat) -> None
 
 
 # ── Printers ──────────────────────────────────────────────────────────────────
@@ -155,15 +171,16 @@ def get_signal_date() -> pd.Timestamp:
 
 def load_models() -> dict:
     """
-    Load all saved models from models/ directory (Phase 1c -- v2).
-    All tickers route to their sector shared v2 model.
+    Load all saved models from models/ directory (Phase 2).
+    All tickers route to their sector shared model.
     VRTX finetuned v1 retired: v2 shared biotech used for VRTX.
     Fails loudly if any required model file is missing.
     Returns {ticker: bundle_dict}.
     """
     paths = {
-        "tech":    MODELS_DIR / "tech"    / "xgb_tech_shared_v2.pkl",
-        "biotech": MODELS_DIR / "biotech" / "xgb_biotech_shared_v2.pkl",
+        "tech":       MODELS_DIR / "tech"       / "xgb_tech_shared_v2.pkl",
+        "biotech":    MODELS_DIR / "biotech"    / "xgb_biotech_shared_v2.pkl",
+        "financials": MODELS_DIR / "financials" / "xgb_financials_shared_v1.pkl",
     }
     for label, path in paths.items():
         if not path.exists():
@@ -404,8 +421,9 @@ def compute_ticker_feature_row(
 
     Fails loudly if any required feature is NaN in the final row.
     """
-    sector     = TICKER_SECTOR[ticker]
-    is_biotech = (sector == "biotech")
+    sector        = TICKER_SECTOR[ticker]
+    is_biotech    = (sector == "biotech")
+    is_financials = (sector == "financials")
 
     # --- 1. Technical features ---
     tech_df = _build_tech_features(ohlcv, ticker)
@@ -434,6 +452,8 @@ def compute_ticker_feature_row(
     _add_regime_stress(feat)   # rate_environment, inflation_regime, macro_stress_score
     if is_biotech:
         _add_fda(feat, fda_df, ticker)
+    if is_financials:
+        _add_credit_spread(feat)
 
     # AMZN EPS outlier: same clip applied during training
     if ticker == "AMZN" and "last_eps_surprise_pct" in feat.columns:
@@ -532,18 +552,73 @@ def kelly_sizing() -> tuple:
     return round(KELLY_FULL, 4), round(rec, 4)
 
 
+# ── Trade cap check ───────────────────────────────────────────────────────────
+
+def check_trade_cap(ticker: str, signal_date: pd.Timestamp) -> tuple:
+    """
+    Rolling 8-week concentration cap.
+    Returns (is_capped: bool, reason: str).
+
+    Logic: look at existing FIRE rows in signal_log.parquet from the last
+    CAP_WEEKS weeks (strictly before signal_date).  If total fires >= CAP_MIN_TRADES
+    and this ticker's share >= CAP_MAX_SHARE, suppress the signal.
+
+    Why: Phase 1c holdout had 52/61 FIRE trades from MSFT alone (85%).
+    The cap ensures no single ticker crowds out the rest of the universe.
+    """
+    log_path = SIGNALS_DIR / "signal_log.parquet"
+    if not log_path.exists():
+        return False, ""
+
+    try:
+        log = pd.read_parquet(log_path, engine="pyarrow")
+        log.index = pd.to_datetime(log.index)
+    except Exception:
+        return False, ""
+
+    window_start = signal_date - pd.Timedelta(weeks=CAP_WEEKS)
+    recent_fires = log[
+        (log.index >= window_start) &
+        (log.index < signal_date) &
+        (log["signal"] == "FIRE")
+    ]
+
+    total_fires = len(recent_fires)
+    if total_fires < CAP_MIN_TRADES:
+        return False, ""
+
+    ticker_fires = int((recent_fires["ticker"] == ticker).sum())
+    share = ticker_fires / total_fires
+
+    if share >= CAP_MAX_SHARE:
+        return True, (
+            f"{ticker} has {ticker_fires}/{total_fires} fires in last {CAP_WEEKS}w "
+            f"({share:.0%} >= {CAP_MAX_SHARE:.0%} cap)"
+        )
+    return False, ""
+
+
 # ── Signal row builder ────────────────────────────────────────────────────────
 
 def build_signal_row(
-    signal_date:  pd.Timestamp,
-    actual_date:  pd.Timestamp,
-    ticker:       str,
-    pred:         dict,
-    regime_feats: pd.Series,
-    model_label:  str,
+    signal_date:     pd.Timestamp,
+    actual_date:     pd.Timestamp,
+    ticker:          str,
+    pred:            dict,
+    regime_feats:    pd.Series,
+    model_label:     str,
+    force_no_fire:   bool = False,
+    notes:           str  = "",
 ) -> dict:
-    proba_side     = pred["proba_sideways"]
-    signal         = "FIRE" if proba_side >= SIGNAL_THRESHOLD else "NO_FIRE"
+    """
+    Build one signal log row.
+    force_no_fire=True: suppress FIRE even if proba_side >= SIGNAL_THRESHOLD
+                        (used for excluded tickers and cap-suppressed signals).
+    """
+    proba_side = pred["proba_sideways"]
+    signal     = "NO_FIRE" if force_no_fire else (
+        "FIRE" if proba_side >= SIGNAL_THRESHOLD else "NO_FIRE"
+    )
     kelly_frac, rec_size = kelly_sizing() if signal == "FIRE" else (0.0, 0.0)
 
     return {
@@ -564,7 +639,7 @@ def build_signal_row(
         "recommended_size_pct": round(rec_size * 100, 2),
         "model_version":        model_label,
         "actual_outcome":       "",    # filled in after 5 trading days
-        "notes":                "",
+        "notes":                notes,
     }
 
 
@@ -658,7 +733,7 @@ def main() -> None:
 
     section("ManthIQ Step 12 -- Weekly Iron Condor Signal Generator")
     print(f"  Threshold      : {SIGNAL_THRESHOLD}")
-    print(f"  Win rate basis : {WIN_RATE:.0%} (Step 11 holdout, 42 trades at threshold 0.55)")
+    print(f"  Win rate basis : {WIN_RATE:.1%} (Phase 2 OOS, 4,657 trades at threshold 0.65)")
     print(f"  Kelly full     : {KELLY_FULL:.4f}  ({KELLY_FULL*100:.1f}%)")
     print(f"  Kelly half     : {KELLY_HALF:.4f}  ({KELLY_HALF*100:.1f}%)")
     print(f"  Recommended sz : {kelly_rec_pct:.1f}%  (half-Kelly capped at {MAX_POSITION_PCT:.0%})")
@@ -674,10 +749,11 @@ def main() -> None:
     # Determine model label for each ticker (for logging)
     model_labels = {}
     for ticker in ALL_TICKERS:
-        if ticker == "VRTX":
-            model_labels[ticker] = "VRTX_finetuned_v1"
-        else:
-            model_labels[ticker] = f"xgb_{TICKER_SECTOR[ticker]}_shared_v1"
+        sector = TICKER_SECTOR[ticker]
+        bundle = ticker_models[ticker]
+        # Model version is embedded in the pkl path; derive from feature count
+        n_feats = len(bundle["feature_names"])
+        model_labels[ticker] = f"xgb_{sector}_shared ({n_feats}f)"
 
     # ── 3. Fetch FRED macro (shared across all tickers) ────────────────────────
     section("Fetching FRED Macro Data")
@@ -685,7 +761,7 @@ def main() -> None:
     print("        a slight approximation vs the 30-year training window.")
     fred = fetch_fred_macro()
 
-    # ── 4. Fetch OHLCV for all 11 tickers ──────────────────────────────────────
+    # ── 4. Fetch OHLCV for all 27 tickers ─────────────────────────────────────
     section("Fetching OHLCV (all tickers)")
     ohlcv_data = {}
     for ticker in ALL_TICKERS:
@@ -724,15 +800,49 @@ def main() -> None:
 
     for ticker in ALL_TICKERS:
         print(f"\n  [{TICKER_SECTOR[ticker].upper()}] {ticker}")
+
+        # -- Exclusion check (before expensive feature computation) --
+        if ticker in EXCLUDED_FROM_SIGNALS:
+            print(f"  [SKIP] {ticker}: excluded from live signals "
+                  f"(weak OOS F1, in EXCLUDED_FROM_SIGNALS)")
+            # Still need prediction for the log row -- compute features
+            feature_row, actual_date = compute_ticker_feature_row(
+                ticker, ohlcv_data[ticker], fred, fda_df, regime_feats, signal_date
+            )
+            pred = predict_ticker(ticker, feature_row, ticker_models[ticker])
+            row  = build_signal_row(
+                signal_date, actual_date, ticker, pred, regime_feats,
+                model_labels[ticker],
+                force_no_fire=True,
+                notes="excluded: weak OOS F1 (EXCLUDED_FROM_SIGNALS)",
+            )
+            signal_rows.append(row)
+            print(f"  [SKIP] {ticker}: logged NO_FIRE "
+                  f"(proba_side={pred['proba_sideways']:.3f} suppressed)")
+            continue
+
         feature_row, actual_date = compute_ticker_feature_row(
             ticker, ohlcv_data[ticker], fred, fda_df, regime_feats, signal_date
         )
         pred = predict_ticker(ticker, feature_row, ticker_models[ticker])
-        row  = build_signal_row(
-            signal_date, actual_date, ticker, pred,
-            regime_feats, model_labels[ticker],
+
+        # -- Trade cap check (only matters if signal would fire) --
+        would_fire = pred["proba_sideways"] >= SIGNAL_THRESHOLD
+        cap_suppressed = False
+        cap_reason = ""
+        if would_fire:
+            cap_suppressed, cap_reason = check_trade_cap(ticker, signal_date)
+            if cap_suppressed:
+                print(f"  [CAP]  {ticker}: FIRE suppressed -- {cap_reason}")
+
+        row = build_signal_row(
+            signal_date, actual_date, ticker, pred, regime_feats,
+            model_labels[ticker],
+            force_no_fire=cap_suppressed,
+            notes=f"cap suppressed: {cap_reason}" if cap_suppressed else "",
         )
         signal_rows.append(row)
+
         sig_str = (
             f"FIRE  proba_side={pred['proba_sideways']:.3f}"
             if row["signal"] == "FIRE"

@@ -50,8 +50,9 @@ CLASS_PROBA = ["proba_bear", "proba_side", "proba_bull"]
 
 # v2 (Phase 1c) sector OOS F1 reference -- populated after 06_train.py v2 run
 SECTOR_BASELINES = {
-    "tech":    {"oos_f1": 0.402, "holdout_f1": 0.414},
-    "biotech": {"oos_f1": 0.403, "holdout_f1": 0.386},
+    "tech":       {"oos_f1": 0.402, "holdout_f1": 0.414},
+    "biotech":    {"oos_f1": 0.403, "holdout_f1": 0.386},
+    "financials": {"oos_f1": 0.437, "holdout_f1": 0.353},
 }
 
 
