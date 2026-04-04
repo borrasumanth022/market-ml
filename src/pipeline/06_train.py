@@ -1,22 +1,23 @@
 """
-Step 6 -- Multi-ticker XGBoost baseline (sector shared models)
+Step 6 / Phase 1c -- Multi-ticker XGBoost shared sector models
 ==============================================================
 Trains TWO shared sector models on combined ticker data:
-  Tech model:    36 technical + 14 event + ticker_id one-hot
-  Biotech model: 36 technical + 14 event + 5 FDA + ticker_id one-hot
+  Tech model:    36 technical + 14 event + 9 regime + ticker_id one-hot
+  Biotech model: 36 technical + 14 event + 9 regime + 5 FDA + ticker_id one-hot
 
 Walk-forward validation: 5 date-based folds, strictly chronological,
 no cross-ticker leakage (all tickers share the same date split points).
-Holdout: 2024-01-01 onwards -- never seen during training/validation.
+Holdout: 2025-01-01 onwards (pushed from 2024-01-01 in Step 11).
 
-Baselines:
-  Tech:    AAPL-only XGBoost F1=0.375 (aapl_ml Phase 2 champion)
-  Biotech: Random baseline F1=0.333
+Phase 1c expansion (2026-04-04):
+  Tech:    6 original -> 12 tickers (added AMD, TSLA, CRM, ADBE, INTC, ORCL)
+  Biotech: 5 original -> 10 tickers (added ABBV, BMY, GILD, AMGN, PFE)
+  Saves as v2 to preserve v1 models intact.
 
 Output:
-  models/tech/xgb_tech_shared_v1.pkl
-  models/biotech/xgb_biotech_shared_v1.pkl
-  data/processed/{TICKER}_predictions.parquet (per ticker)
+  models/tech/xgb_tech_shared_v2.pkl
+  models/biotech/xgb_biotech_shared_v2.pkl
+  data/processed/{TICKER}_predictions.parquet (per ticker, all 22 tickers)
 
 Usage:
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\06_train.py
@@ -113,18 +114,67 @@ REGIME_9 = [
 TARGET = "dir_1w"
 N_SPLITS = 5
 
-# Step 6 OOS F1 scores (holdout was 2024-01-01 -- kept for comparison)
-# These are the reference scores before Step 11 retraining
-STEP6_REFERENCE = {
-    "tech":    {"oos_f1": 0.402, "holdout_f1": 0.414, "holdout_date": "2024-01-01"},
-    "biotech": {"oos_f1": 0.403, "holdout_f1": 0.386, "holdout_date": "2024-01-01"},
-}
+# Phase 1c: model version for output filenames
+MODEL_VERSION = "v2"
 
 # Baseline F1 scores to compare against
 BASELINES = {
     "tech":    {"name": "AAPL-only XGBoost (aapl_ml Phase 2)", "f1": 0.375},
     "biotech": {"name": "Random baseline",                      "f1": 0.333},
 }
+
+# Original tickers from v1 training (Step 11) -- used to load v1 reference metrics
+V1_TICKERS = {
+    "tech":    ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META"],
+    "biotech": ["LLY", "MRNA", "BIIB", "REGN", "VRTX"],
+}
+
+
+# ── V1 reference loader ────────────────────────────────────────────────────────
+
+def load_v1_metrics(sector: str) -> dict:
+    """Load v1 OOS+holdout F1 and training row count from existing prediction files."""
+    tickers = V1_TICKERS[sector]
+    oos_frames, hold_frames = [], []
+    for t in tickers:
+        path = PROCESSED_DIR / f"{t}_predictions.parquet"
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path, engine="pyarrow")
+        oos_frames.append(df[df["split"] == "oos"])
+        hold_frames.append(df[df["split"] == "holdout"])
+
+    if not oos_frames:
+        return {}
+
+    oos_all = pd.concat(oos_frames)
+    oos_f1  = f1_score(oos_all["actual"], oos_all["predicted"],
+                       average="weighted", zero_division=0)
+
+    hold_f1 = float("nan")
+    if hold_frames:
+        hold_all = pd.concat(hold_frames)
+        if len(hold_all) > 0:
+            hold_f1 = f1_score(hold_all["actual"], hold_all["predicted"],
+                               average="weighted", zero_division=0)
+
+    # Count training rows from combined parquet (pre-holdout)
+    n_train = 0
+    for t in tickers:
+        evt = PROCESSED_DIR / f"{t}_with_events.parquet"
+        if evt.exists():
+            idx = pd.read_parquet(evt, engine="pyarrow", columns=[]).index
+            n_train += int((idx < HOLDOUT_DATE).sum())
+
+    n_features = 65 if sector == "tech" else 69  # v1 one-hot dims
+    return {
+        "oos_f1":    round(oos_f1, 4),
+        "holdout_f1": round(hold_f1, 4) if not np.isnan(hold_f1) else float("nan"),
+        "n_tickers": len(tickers),
+        "n_train":   n_train,
+        "n_features": n_features,
+        "one_hot_dim": 6 if sector == "tech" else 5,
+    }
 
 
 # ── Section printer ────────────────────────────────────────────────────────────
@@ -516,8 +566,8 @@ def run_sector(sector: str) -> None:
     # 8. Holdout evaluation
     holdout_data = evaluate_holdout(final_model, df_holdout, X_holdout, sector)
 
-    # 9. Save model
-    model_path = MODELS_DIR / sector / f"xgb_{sector}_shared_v1.pkl"
+    # 9. Save model as v2 (v1 preserved intact)
+    model_path = MODELS_DIR / sector / f"xgb_{sector}_shared_{MODEL_VERSION}.pkl"
     model_path.parent.mkdir(parents=True, exist_ok=True)
     with open(model_path, "wb") as f:
         pickle.dump({
@@ -537,29 +587,48 @@ def run_sector(sector: str) -> None:
         holdout_data, sector,
     )
 
-    # 11. Step 11 before/after comparison
-    ref = STEP6_REFERENCE[sector]
+    # 11. Phase 1c v1->v2 comparison
     new_oos_f1  = f1_score(oos_actual, oos_pred, average="weighted")
     new_hold_f1 = (f1_score(holdout_data["actual"], holdout_data["predicted"],
                             average="weighted") if holdout_data else float("nan"))
-    section(f"Step 11 Before/After Comparison: {sector.upper()}")
-    print(f"\n  {'Metric':<30}  {'Step 6 (old)':>12}  {'Step 11 (new)':>13}  {'Delta':>8}")
-    print(f"  {'-'*70}")
-    print(f"  {'Holdout boundary':<30}  {ref['holdout_date']:>12}  "
-          f"{'2025-01-01':>13}  {'pushed 1yr':>8}")
-    delta_oos  = new_oos_f1  - ref["oos_f1"]
-    delta_hold = new_hold_f1 - ref["holdout_f1"]
-    sign_oos   = "+" if delta_oos  >= 0 else ""
-    sign_hold  = "+" if delta_hold >= 0 else ""
-    print(f"  {'OOS weighted F1':<30}  {ref['oos_f1']:>12.3f}  "
-          f"{new_oos_f1:>13.3f}  {sign_oos}{delta_oos:>7.3f}")
-    print(f"  {'Holdout weighted F1':<30}  {ref['holdout_f1']:>12.3f}  "
-          f"{new_hold_f1:>13.3f}  {sign_hold}{delta_hold:>7.3f}")
-    print(f"  {'Features':<30}  {'56' if sector=='tech' else '60':>12}  "
-          f"{'65' if sector=='tech' else '69':>13}  {'+9 regime':>8}")
-    print(f"\n  NOTE: Holdout F1 change reflects BOTH the new features AND the")
-    print(f"        shorter holdout window (2025-01-01+). These effects cannot be")
-    print(f"        separated without a controlled ablation.")
+    new_n_tickers = len(SECTORS[sector]["tickers"])
+    new_n_train   = len(y_pretrain)
+    new_one_hot   = 12 if sector == "tech" else 10
+    new_features  = X_pretrain.shape[1]
+
+    v1 = load_v1_metrics(sector)
+
+    section(f"Phase 1c v1 -> v2 Comparison: {sector.upper()}")
+    print(f"\n  {'Metric':<32}  {'v1 (Step 11)':>14}  {'v2 (Phase 1c)':>14}  {'Delta':>8}")
+    print(f"  {'-'*76}")
+
+    def _row(label, v1_val, v2_val, fmt=".3f", suffix=""):
+        if isinstance(v1_val, float) and np.isnan(v1_val):
+            v1_s = "  N/A"
+        else:
+            v1_s = format(v1_val, fmt) + suffix
+        delta = v2_val - v1_val if (not isinstance(v1_val, float) or not np.isnan(v1_val)) else float("nan")
+        sign  = "+" if (not np.isnan(delta) and delta >= 0) else ""
+        v2_s  = format(v2_val, fmt) + suffix
+        d_s   = f"{sign}{delta:{fmt}}" if not np.isnan(delta) else "   N/A"
+        print(f"  {label:<32}  {v1_s:>14}  {v2_s:>14}  {d_s:>8}")
+
+    _row("Tickers in sector", float(v1.get("n_tickers", 0)), float(new_n_tickers), fmt=".0f")
+    _row("Pre-holdout train rows", float(v1.get("n_train", 0)), float(new_n_train), fmt=".0f")
+    _row("Feature dimensions", float(v1.get("n_features", 0)), float(new_features), fmt=".0f")
+    _row("One-hot dim (tickers)", float(v1.get("one_hot_dim", 0)), float(new_one_hot), fmt=".0f")
+    _row("OOS weighted F1", v1.get("oos_f1", float("nan")), new_oos_f1)
+    _row("Holdout weighted F1", v1.get("holdout_f1", float("nan")), new_hold_f1)
+
+    print(f"\n  OOS per-class recall (v2):")
+    for cls_idx, cls_name in enumerate(CLASS_NAMES):
+        mask_cls = [a == cls_idx for a in oos_actual]
+        if sum(mask_cls) == 0:
+            continue
+        correct  = sum(p == cls_idx for a, p in zip(oos_actual, oos_pred) if a == cls_idx)
+        total    = sum(mask_cls)
+        recall   = correct / total if total > 0 else 0.0
+        print(f"    {cls_name:8s}: recall={recall:.3f}  (n={total:,})")
 
     print(f"\n  {sector.upper()} sector complete.")
 
@@ -567,12 +636,13 @@ def run_sector(sector: str) -> None:
 # ── Entry points ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    section("market_ml -- Step 6/11: Multi-ticker XGBoost (regime-aware retraining)")
+    section(f"market_ml -- Phase 1c: XGBoost {MODEL_VERSION} (22 tickers, regime-aware)")
     print(f"  Target:    {TARGET}")
-    print(f"  Holdout:   >= {HOLDOUT_DATE.date()}  (Step 11: pushed from 2024-01-01)")
+    print(f"  Holdout:   >= {HOLDOUT_DATE.date()}")
     print(f"  WF splits: {N_SPLITS}")
-    print(f"  Features:  36 tech + 14 event + 9 regime + 6 ticker one-hot = 65 (tech)")
-    print(f"             36 tech + 14 event + 9 regime + 5 FDA + 5 one-hot = 69 (biotech)")
+    print(f"  Tech:    36 tech + 14 event + 9 regime + 12 one-hot = 71 features (12 tickers)")
+    print(f"  Biotech: 36 tech + 14 event + 9 regime + 5 FDA + 10 one-hot = 74 features (10 tickers)")
+    print(f"  Saves as {MODEL_VERSION} -- v1 models preserved intact")
     print(f"  Tech baseline:    F1={BASELINES['tech']['f1']}")
     print(f"  Biotech baseline: F1={BASELINES['biotech']['f1']}")
 
@@ -585,9 +655,9 @@ def main() -> None:
         run_sector(sector)
 
     section("All sectors complete")
-    print("  Models:      models/tech/xgb_tech_shared_v1.pkl")
-    print("  Models:      models/biotech/xgb_biotech_shared_v1.pkl")
-    print("  Predictions: data/processed/{TICKER}_predictions.parquet")
+    print(f"  Models:      models/tech/xgb_tech_shared_{MODEL_VERSION}.pkl")
+    print(f"  Models:      models/biotech/xgb_biotech_shared_{MODEL_VERSION}.pkl")
+    print("  Predictions: data/processed/{TICKER}_predictions.parquet  (all 22 tickers)")
     print("\n  Next step: src/pipeline/07_evaluate.py\n")
 
 

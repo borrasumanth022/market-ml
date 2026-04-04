@@ -40,7 +40,7 @@ from config.tickers import SECTORS, TICKER_SECTOR
 
 PROCESSED_DIR = ROOT / "data" / "processed"
 DOCS_DIR      = ROOT / "docs"
-HOLDOUT_DATE  = pd.Timestamp("2024-01-01")
+HOLDOUT_DATE  = pd.Timestamp("2025-01-01")  # updated Step 11; was 2024-01-01
 
 FINE_TUNE_THRESHOLD = 0.05    # flag if ticker F1 > this below sector average
 N_CAL_BINS          = 10      # calibration reliability diagram buckets
@@ -48,7 +48,7 @@ N_CAL_BINS          = 10      # calibration reliability diagram buckets
 CLASS_NAMES = ["Bear", "Sideways", "Bull"]
 CLASS_PROBA = ["proba_bear", "proba_side", "proba_bull"]
 
-# Step 6 reported OOS F1 scores for reference
+# v2 (Phase 1c) sector OOS F1 reference -- populated after 06_train.py v2 run
 SECTOR_BASELINES = {
     "tech":    {"oos_f1": 0.402, "holdout_f1": 0.414},
     "biotech": {"oos_f1": 0.403, "holdout_f1": 0.386},

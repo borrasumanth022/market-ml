@@ -2,7 +2,7 @@
 Step 12 -- Weekly Iron Condor Signal Generator (Paper Trading Engine)
 =====================================================================
 Runs every Monday morning (or any day, with a warning if not Monday).
-Loads the trained models, fetches the latest weekly OHLCV for all 11 tickers,
+Loads the trained models, fetches the latest weekly OHLCV for all 22 tickers,
 computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + FDA_5),
 and outputs iron condor signals at confidence threshold 0.55.
 Appends every signal (FIRE or NO_FIRE) to data/signals/signal_log.parquet.
@@ -11,10 +11,11 @@ Signal rule:
   FIRE    : model predicts Sideways with proba_side >= SIGNAL_THRESHOLD (0.55)
   NO_FIRE : proba_side < SIGNAL_THRESHOLD
 
-Models used:
-  VRTX          -> models/biotech/VRTX_finetuned_v1.pkl  (60 features, no REGIME_9)
-  other biotech -> models/biotech/xgb_biotech_shared_v1.pkl  (69 features)
-  tech          -> models/tech/xgb_tech_shared_v1.pkl        (65 features)
+Models used (Phase 1c -- v2):
+  tech    (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl        (71 features)
+  biotech (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl  (74 features)
+  VRTX finetuned v1 RETIRED: v2 shared biotech now routes VRTX (holdout F1 0.410).
+    The finetuned model's +0.043 advantage was measured on 2024 data (now in training).
   Each model stores its own feature_names list -- the feature vector is built
   by matching that list exactly (one-hot columns set to 0/1 for this ticker).
 
@@ -22,7 +23,8 @@ Kelly Criterion position sizing (half-Kelly, capped at 20% of portfolio):
   kelly_fraction   = (WIN_RATE / AVG_LOSS) - (LOSS_RATE / AVG_WIN)
   recommended_size = min(kelly_fraction * 0.5, MAX_POSITION_PCT)
 
-  Using WIN_RATE = 0.69 from Step 11 holdout backtest (42 trades at threshold 0.55).
+  Using WIN_RATE = 0.69 from Phase 1c holdout backtest (61 trades at threshold 0.55, WR=67.2%).
+  Keeping 0.69 as conservative estimate; actual Phase 1c WR is 67.2%.
 
 Known approximations:
   - macro_stress_score z-score computed over the 500-day OHLCV window, not the
@@ -64,7 +66,7 @@ SIGNAL_THRESHOLD = 0.55
 PREMIUM          = 0.015    # iron condor credit per unit
 LOSS_MAX         = 0.030    # max loss per unit if wings triggered
 
-# Kelly inputs from Step 11 holdout backtest (42 trades, threshold 0.55)
+# Kelly inputs from Phase 1c holdout backtest (61 trades, threshold 0.55)
 WIN_RATE         = 0.69
 LOSS_RATE        = 1.0 - WIN_RATE
 AVG_WIN          = PREMIUM
@@ -153,16 +155,15 @@ def get_signal_date() -> pd.Timestamp:
 
 def load_models() -> dict:
     """
-    Load all saved models from models/ directory.
-    VRTX gets its fine-tuned model (60 features, pre-Step-11 -- no REGIME_9).
-    All other tickers get the sector shared model (65/69 features with REGIME_9).
+    Load all saved models from models/ directory (Phase 1c -- v2).
+    All tickers route to their sector shared v2 model.
+    VRTX finetuned v1 retired: v2 shared biotech used for VRTX.
     Fails loudly if any required model file is missing.
     Returns {ticker: bundle_dict}.
     """
     paths = {
-        "tech":    MODELS_DIR / "tech"    / "xgb_tech_shared_v1.pkl",
-        "biotech": MODELS_DIR / "biotech" / "xgb_biotech_shared_v1.pkl",
-        "VRTX":    MODELS_DIR / "biotech" / "VRTX_finetuned_v1.pkl",
+        "tech":    MODELS_DIR / "tech"    / "xgb_tech_shared_v2.pkl",
+        "biotech": MODELS_DIR / "biotech" / "xgb_biotech_shared_v2.pkl",
     }
     for label, path in paths.items():
         if not path.exists():
@@ -178,13 +179,10 @@ def load_models() -> dict:
         n = len(bundles[label]["feature_names"])
         print(f"  [OK]  {label:8s}: {n} features  ({path.relative_to(ROOT)})")
 
-    # Map each ticker to its model bundle
+    # Map each ticker to its sector model bundle (VRTX now uses shared v2)
     ticker_models = {}
     for ticker in ALL_TICKERS:
-        if ticker == "VRTX":
-            ticker_models[ticker] = bundles["VRTX"]
-        else:
-            ticker_models[ticker] = bundles[TICKER_SECTOR[ticker]]
+        ticker_models[ticker] = bundles[TICKER_SECTOR[ticker]]
 
     return ticker_models
 
