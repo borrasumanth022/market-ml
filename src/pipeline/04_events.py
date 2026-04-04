@@ -85,6 +85,28 @@ BIOTECH_SPONSORS = {
         "name"    : "Vertex Pharmaceuticals",
         "terms"   : ["VERTEX PHARMS"],              # validated: NDA203188 (Kalydeco)
     },
+    # Phase 1 expansion tickers
+    "ABBV": {
+        "name"    : "AbbVie",
+        "terms"   : ["ABBVIE INC", "ABBVIE"],       # Humira (NDA020715), Skyrizi, Rinvoq
+    },
+    "BMY":  {
+        "name"    : "Bristol-Myers Squibb",
+        "terms"   : ["BRISTOL-MYERS SQUIBB CO", "BRISTOL-MYERS SQUIBB"],  # Opdivo, Eliquis
+    },
+    "GILD": {
+        "name"    : "Gilead Sciences",
+        "terms"   : ["GILEAD SCIENCES INC", "GILEAD SCIENCES"],  # Sovaldi, Harvoni, Biktarvy
+    },
+    "AMGN": {
+        "name"    : "Amgen",
+        "terms"   : ["AMGEN INC", "AMGEN"],         # Enbrel, Neupogen, Prolia, Repatha
+    },
+    "PFE":  {
+        "name"    : "Pfizer",
+        "terms"   : ["PFIZER INC", "PFIZER"],       # Eliquis (co-mktg), Ibrance, Xeljanz
+        # NOTE: COVID vaccines (Comirnaty) are CBER biologics, not in CDER drugsfda
+    },
 }
 
 # ── Hardcoded FDA events for tickers not in CDER (MRNA = CBER biologics) ──────
