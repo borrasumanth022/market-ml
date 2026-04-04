@@ -24,6 +24,12 @@ SECTORS = {
         "universal_events": ["fed_rate", "yield_curve", "credit_spreads"],
         "sector_events": [],
     },
+    "energy": {
+        "tickers": ["XOM", "CVX", "COP", "SLB", "EOG"],
+        "description": "Large cap US energy companies",
+        "universal_events": ["fed_rate", "oil_price", "natural_gas", "rig_count"],
+        "sector_events": ["oil_price", "natural_gas", "rig_count"],
+    },
 }
 
 # Sector each ticker belongs to

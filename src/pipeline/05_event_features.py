@@ -1,21 +1,30 @@
 """
-Step 5 — Event feature engineering (ticker-agnostic)
+Step 5 -- Event feature engineering (ticker-agnostic)
 =====================================================
-Joins macro + earnings + FDA events onto each ticker's labeled feature matrix.
+Joins macro + earnings + FDA + energy events onto each ticker's labeled feature matrix.
 
-Features built for ALL 11 tickers:
-  A. Earnings    — proximity, EPS surprise, beat/miss streak, has_data flag
-  B. Macro       — fed rate level/changes, CPI YoY, unemployment level/change
-  C. Regime      — rate_environment, inflation_regime, macro_stress_score
+Features built for ALL 32 tickers:
+  A. Earnings    -- proximity, EPS surprise, beat/miss streak, has_data flag
+  B. Macro       -- fed rate level/changes, CPI YoY, unemployment level/change
+  C. Regime      -- rate_environment, inflation_regime, macro_stress_score
 
-Features built for BIOTECH tickers only (LLY, MRNA, BIIB, REGN, VRTX):
-  D. FDA actions — proximity (days to/since), outcome, trailing decision count,
+Features built for BIOTECH tickers only (LLY, MRNA, BIIB, REGN, VRTX, ABBV, BMY, GILD, AMGN, PFE):
+  D. FDA actions -- proximity (days to/since), outcome, trailing decision count,
                    is_pdufa_month flag, rolling approval rate
 
+Features built for FINANCIALS tickers only (JPM, GS, BAC, MS, WFC):
+  D2. Credit spread -- BAMLH0A0HYM2 OAS level, 21d change, 63d z-score
+
+Features built for ENERGY tickers only (XOM, CVX, COP, SLB, EOG):
+  D3. Energy commodities -- WTI price/changes/zscore, natgas price/changes,
+                            rig count and 4-week change (ENERGY_9)
+
 Data sources:
-  - Earnings  : yfinance get_earnings_dates() per ticker
-  - Macro     : FRED re-fetched as daily levels (FEDFUNDS, CPIAUCSL, UNRATE)
-  - FDA       : data/events/biotech/fda_events.parquet (from 04_events.py)
+  - Earnings      : yfinance get_earnings_dates() per ticker
+  - Macro         : FRED re-fetched as daily levels (FEDFUNDS, CPIAUCSL, UNRATE)
+  - FDA           : data/events/biotech/fda_events.parquet (from 04_events.py)
+  - Credit spread : data/events/financials/credit_spreads.parquet
+  - Energy        : data/events/energy/energy_events.parquet
 
 Lookahead policy:
   - All features are strictly backward-looking on each trading day
@@ -31,8 +40,10 @@ NaN sentinels (pre-history rows):
   - last_eps_surprise_pct     -> 0.0
   - earnings_streak           -> 0
   - FDA proximity             -> 365  (neutral large value, not NaN)
+  - energy natgas pre-1997    -> 0.0
+  - energy rig count gaps     -> 0.0
 
-Output: data/processed/{TICKER}_with_events.parquet for all 11 tickers
+Output: data/processed/{TICKER}_with_events.parquet for all 32 tickers
 
 Usage:
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\05_event_features.py
@@ -60,6 +71,7 @@ from config.tickers import SECTORS, TICKER_SECTOR
 PROCESSED_DIR    = ROOT / "data" / "processed"
 FDA_EVENTS       = ROOT / "data" / "events" / "biotech"     / "fda_events.parquet"
 CREDIT_SPREADS   = ROOT / "data" / "events" / "financials"  / "credit_spreads.parquet"
+ENERGY_EVENTS    = ROOT / "data" / "events" / "energy"      / "energy_events.parquet"
 
 # ── Constants (inherited from aapl_ml settings) ───────────────────────────────
 CAP_EARNINGS     = 90      # sentinel days when no earnings history exists
@@ -430,6 +442,63 @@ def add_credit_spread_features(feat: pd.DataFrame) -> None:
           f"first valid: {first_valid.date() if first_valid else 'N/A'}")
 
 
+def add_energy_features(feat: pd.DataFrame) -> None:
+    """
+    ENERGY_7 -- Energy commodity features (energy sector only).
+    Source: FRED DCOILWTICO (WTI), DHHNGSP (natgas),
+            saved as wide-format daily DataFrame by 04_events.py.
+
+    Coverage:
+      wti_price / changes / zscore : 1986-01-02 onwards
+      natgas_price / changes       : 1997-01-07 onwards  (pre-1997 -> sentinel 0.0)
+
+    Features added (ENERGY_7):
+      wti_price         : WTI crude spot price (USD per barrel)
+      wti_change_1w     : 5-day pct change in WTI (%)
+      wti_change_1m     : 21-day pct change in WTI (%)
+      wti_zscore_63d    : 63-day rolling z-score of WTI price
+      natgas_price      : Henry Hub spot price (USD per MMBtu)
+      natgas_change_1w  : 5-day pct change in natgas (%)
+      natgas_change_1m  : 21-day pct change in natgas (%)
+
+    NaN sentinel: 0.0 for pre-coverage rows (natgas pre-1997).
+    """
+    trading_dates = feat.index
+
+    if not ENERGY_EVENTS.exists():
+        print(f"    [WARN] energy_events.parquet not found -- "
+              f"run 04_events.py first (sentinel 0.0 used)")
+        for col in ["wti_price", "wti_change_1w", "wti_change_1m", "wti_zscore_63d",
+                    "natgas_price", "natgas_change_1w", "natgas_change_1m"]:
+            feat[col] = 0.0
+        return
+
+    en_df = pd.read_parquet(ENERGY_EVENTS, engine="pyarrow")
+    en_df.index = pd.to_datetime(en_df.index).normalize()
+
+    def _align(series: pd.Series) -> pd.Series:
+        """Forward-fill a daily series onto ticker trading dates."""
+        return (
+            series
+            .reindex(series.index.union(trading_dates))
+            .sort_index()
+            .ffill()
+            .reindex(trading_dates)
+        )
+
+    # Align all columns from the pre-computed energy_events parquet
+    for col in ["wti_price", "wti_change_1w", "wti_change_1m", "wti_zscore_63d",
+                "natgas_price", "natgas_change_1w", "natgas_change_1m"]:
+        aligned = _align(en_df[col])
+        feat[col] = aligned.fillna(0.0).values
+
+    n_valid_wti    = (feat["wti_price"] != 0.0).sum()
+    n_valid_natgas = (feat["natgas_price"] != 0.0).sum()
+    print(f"    WTI valid rows   : {n_valid_wti:,}/{len(trading_dates):,}")
+    print(f"    natgas valid rows: {n_valid_natgas:,}/{len(trading_dates):,} "
+          f"(pre-1997 -> 0.0 sentinel)")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Coverage report
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,6 +575,12 @@ def process_ticker(
     if is_financials:
         section("D2. Credit spread features (financials)")
         add_credit_spread_features(feat)
+
+    # D3. Energy commodity features (energy only)
+    is_energy = (sector == "energy")
+    if is_energy:
+        section("D3. Energy commodity features (energy)")
+        add_energy_features(feat)
 
     # E. Regime features from Step 11 (VIX, yield spread, sentiment, breadth, HMM)
     if regime_df is not None and len(regime_df) > 0:

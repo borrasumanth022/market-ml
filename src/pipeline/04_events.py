@@ -1,16 +1,16 @@
 """
-Step 4 — Event data collection
+Step 4 -- Event data collection
 ================================
-Collects two categories of events and saves them to data/events/.
+Collects event/commodity data and saves them to data/events/.
 
-Part A — Universal macro events (FRED, no API key needed)
+Part A -- Universal macro events (FRED, no API key needed)
   FEDFUNDS  : Fed funds rate (monthly)     -> fed_rate_change
   CPIAUCSL  : CPI (monthly)               -> cpi_change
   UNRATE    : Unemployment rate (monthly)  -> unemployment_change
   GDP       : GDP (quarterly)             -> gdp_change
   Output: data/events/universal/macro_events.parquet
 
-Part B — Biotech FDA events (openFDA public API, no key needed)
+Part B -- Biotech FDA events (openFDA public API, no key needed)
   For each biotech ticker: LLY, MRNA, BIIB, REGN, VRTX
     - Drug approval actions (AP)
     - Complete Response Letters (CR = not approved)
@@ -18,7 +18,18 @@ Part B — Biotech FDA events (openFDA public API, no key needed)
   Sources: openFDA drugsfda endpoint + FDA press releases (via openFDA event endpoint)
   Output: data/events/biotech/fda_events.parquet
 
-Schema for all event files:
+Part C -- Credit Spread (BAMLH0A0HYM2) for Financials sector
+  BAMLH0A0HYM2 : ICE BofA HY Credit Spread (daily, 1996-12-31+)
+  Output: data/events/financials/credit_spreads.parquet
+
+Part D -- Energy commodity data (FRED) for Energy sector
+  DCOILWTICO : WTI crude oil price (daily, 1986+)
+  DHHNGSP    : Henry Hub natural gas spot price (daily, 1997+)
+  Output: data/events/energy/energy_events.parquet
+  Wide-format DataFrame (one column per series); feature engineering done in step 5.
+  NaN sentinels: natgas pre-1997 -> 0.0 (applied in step 5)
+
+Schema for event files (Parts A and B):
   date           DatetimeIndex
   event_type     str   (macro / fda_action)
   event_subtype  str   (e.g. "fed_rate_change", "drug_approval")
@@ -52,6 +63,7 @@ from config.tickers import SECTORS, TICKER_SECTOR
 UNIVERSAL_DIR   = ROOT / "data" / "events" / "universal"
 BIOTECH_DIR     = ROOT / "data" / "events" / "biotech"
 FINANCIALS_DIR  = ROOT / "data" / "events" / "financials"
+ENERGY_DIR      = ROOT / "data" / "events" / "energy"
 
 # ── API constants ──────────────────────────────────────────────────────────────
 FRED_BASE       = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
@@ -521,6 +533,85 @@ except Exception as exc:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PART D -- Energy commodity data (WTI, Natural Gas, Rig Count)
+# ══════════════════════════════════════════════════════════════════════════════
+
+section("PART D -- Energy Commodities (WTI, Natural Gas, Rig Count)")
+
+print("""
+  Sources (FRED):
+    DCOILWTICO : WTI crude oil price     -- daily, 1986-01-02+
+    DHHNGSP    : Henry Hub natural gas   -- daily, 1997-01-07+
+  Coverage notes:
+    natgas pre-1997 : NaN sentinel 0.0 applied in 05_event_features.py
+  Saved to: data/events/energy/energy_events.parquet  (wide-format daily DataFrame)
+""")
+
+energy_path = ENERGY_DIR / "energy_events.parquet"
+energy_ok = False
+
+try:
+    # ── WTI crude oil (DCOILWTICO) ─────────────────────────────────────────
+    print("  Fetching DCOILWTICO (WTI crude) ...", end=" ", flush=True)
+    wti_raw = fetch_fred("DCOILWTICO")
+    wti_raw = wti_raw[wti_raw.index >= "1986-01-01"]
+    print(f"OK  ({len(wti_raw):,} obs, {wti_raw.index[0].date()} to {wti_raw.index[-1].date()})")
+
+    # ── Natural gas (DHHNGSP) ──────────────────────────────────────────────
+    print("  Fetching DHHNGSP (natural gas) ...", end=" ", flush=True)
+    natgas_raw = fetch_fred("DHHNGSP")
+    natgas_raw = natgas_raw[natgas_raw.index >= "1993-01-01"]
+    print(f"OK  ({len(natgas_raw):,} obs, {natgas_raw.index[0].date()} to {natgas_raw.index[-1].date()})")
+
+    # ── Build contiguous daily index covering both series ─────────────────
+    date_start = min(wti_raw.index[0], natgas_raw.index[0])
+    date_end   = max(wti_raw.index[-1], natgas_raw.index[-1])
+    full_idx   = pd.date_range(date_start, date_end, freq="D")
+    full_idx.name = "date"
+
+    # Reindex and forward-fill weekends/holidays
+    wti_daily    = wti_raw.reindex(full_idx).ffill()
+    natgas_daily = natgas_raw.reindex(full_idx).ffill()
+
+    # ── Assemble wide-format DataFrame ─────────────────────────────────────
+    energy_df = pd.DataFrame({
+        "wti_price":    wti_daily,
+        "natgas_price": natgas_daily,
+    }, index=full_idx)
+    energy_df.index = pd.to_datetime(energy_df.index).normalize()
+    energy_df.index.name = "date"
+
+    # Derived features computed here so step 5 just does a merge + sentinel fill
+    # WTI changes (NaN for early rows; step 5 fills with 0.0 where price is NaN)
+    energy_df["wti_change_1w"]  = energy_df["wti_price"].pct_change(5)   * 100
+    energy_df["wti_change_1m"]  = energy_df["wti_price"].pct_change(21)  * 100
+
+    # Natgas changes (pre-1997 rows will be NaN; sentinel applied in step 5)
+    energy_df["natgas_change_1w"] = energy_df["natgas_price"].pct_change(5)  * 100
+    energy_df["natgas_change_1m"] = energy_df["natgas_price"].pct_change(21) * 100
+
+    # WTI 63-day z-score (rolling)
+    wti_roll_mean = energy_df["wti_price"].rolling(63, min_periods=20).mean()
+    wti_roll_std  = energy_df["wti_price"].rolling(63, min_periods=20).std()
+    energy_df["wti_zscore_63d"] = (energy_df["wti_price"] - wti_roll_mean) / wti_roll_std.replace(0, np.nan)
+
+    ENERGY_DIR.mkdir(parents=True, exist_ok=True)
+    energy_df.to_parquet(energy_path, engine="pyarrow")
+    size_kb = energy_path.stat().st_size / 1024
+    n_valid_wti    = energy_df["wti_price"].notna().sum()
+    n_valid_natgas = energy_df["natgas_price"].notna().sum()
+    print(f"\n  Saved energy_events: {len(energy_df):,} daily rows -> "
+          f"{energy_path.relative_to(ROOT)} ({size_kb:.0f} KB)")
+    print(f"  WTI valid rows    : {n_valid_wti:,}  (from {wti_raw.index[0].date()})")
+    print(f"  NatGas valid rows : {n_valid_natgas:,}  (from {natgas_raw.index[0].date()})")
+    print(f"  Columns: {list(energy_df.columns)}")
+    energy_ok = True
+except Exception as exc:
+    print(f"FAILED: {exc}")
+    print("  [WARN] energy_events.parquet not saved -- energy features will use sentinel 0.0")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -557,4 +648,6 @@ print(f"    {(UNIVERSAL_DIR / 'macro_events.parquet').relative_to(ROOT)}")
 print(f"    {(BIOTECH_DIR / 'fda_events.parquet').relative_to(ROOT)}")
 if cs_path.exists():
     print(f"    {cs_path.relative_to(ROOT)}")
+if energy_ok and energy_path.exists():
+    print(f"    {energy_path.relative_to(ROOT)}")
 print(f"\nStep 4 complete. Next step: src/pipeline/05_event_features.py\n")

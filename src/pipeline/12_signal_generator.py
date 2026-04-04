@@ -11,7 +11,7 @@ Timing edge cases handled:
   Missed several Mondays : only generates signals for the current week; prints how
                            many Mondays were missed; does NOT backfill past weeks.
 
-Loads the trained models, fetches the latest weekly OHLCV for all 27 tickers,
+Loads the trained models, fetches the latest weekly OHLCV for all 32 tickers,
 computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + optional sector extras),
 and outputs iron condor signals at confidence threshold 0.65.
 Appends every signal (FIRE or NO_FIRE) to data/signals/signal_log.parquet.
@@ -20,10 +20,11 @@ Signal rule:
   FIRE    : model predicts Sideways with proba_side >= SIGNAL_THRESHOLD (0.65)
   NO_FIRE : proba_side < SIGNAL_THRESHOLD
 
-Models used (Phase 2):
-  tech       (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl         (71 features)
-  biotech    (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl   (74 features)
-  financials  (5 tickers) -> models/financials/xgb_financials_shared_v1.pkl (67 features)
+Models used (Phase 3):
+  tech       (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl              (71 features)
+  biotech    (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl        (74 features)
+  financials  (5 tickers) -> models/financials/xgb_financials_shared_v1.pkl  (67 features)
+  energy      (5 tickers) -> models/energy/xgb_energy_shared_v1.pkl          (71 features)
   VRTX finetuned v1 RETIRED: v2 shared biotech now routes VRTX (holdout F1 0.410).
     The finetuned model's +0.043 advantage was measured on 2024 data (now in training).
   Each model stores its own feature_names list -- the feature vector is built
@@ -137,6 +138,7 @@ _add_macro           = _event_mod.add_macro_features      # (feat, fred) -> None
 _add_regime_stress   = _event_mod.add_regime_features     # (feat) -> None (rate env/inflation/stress)
 _add_fda             = _event_mod.add_fda_features          # (feat, fda_df, ticker) -> None
 _add_credit_spread   = _event_mod.add_credit_spread_features  # (feat) -> None
+_add_energy          = _event_mod.add_energy_features        # (feat) -> None
 
 
 # ── Printers ──────────────────────────────────────────────────────────────────
@@ -225,7 +227,7 @@ def count_missed_mondays(signal_date: pd.Timestamp) -> int:
 
 def load_models() -> dict:
     """
-    Load all saved models from models/ directory (Phase 2).
+    Load all saved models from models/ directory (Phase 3).
     All tickers route to their sector shared model.
     VRTX finetuned v1 retired: v2 shared biotech used for VRTX.
     Fails loudly if any required model file is missing.
@@ -235,6 +237,7 @@ def load_models() -> dict:
         "tech":       MODELS_DIR / "tech"       / "xgb_tech_shared_v2.pkl",
         "biotech":    MODELS_DIR / "biotech"    / "xgb_biotech_shared_v2.pkl",
         "financials": MODELS_DIR / "financials" / "xgb_financials_shared_v1.pkl",
+        "energy":     MODELS_DIR / "energy"     / "xgb_energy_shared_v1.pkl",
     }
     for label, path in paths.items():
         if not path.exists():
@@ -478,6 +481,7 @@ def compute_ticker_feature_row(
     sector        = TICKER_SECTOR[ticker]
     is_biotech    = (sector == "biotech")
     is_financials = (sector == "financials")
+    is_energy     = (sector == "energy")
 
     # --- 1. Technical features ---
     tech_df = _build_tech_features(ohlcv, ticker)
@@ -508,6 +512,8 @@ def compute_ticker_feature_row(
         _add_fda(feat, fda_df, ticker)
     if is_financials:
         _add_credit_spread(feat)
+    if is_energy:
+        _add_energy(feat)
 
     # AMZN EPS outlier: same clip applied during training
     if ticker == "AMZN" and "last_eps_surprise_pct" in feat.columns:

@@ -1,9 +1,11 @@
 """
-Step 6 / Phase 1c -- Multi-ticker XGBoost shared sector models
-==============================================================
-Trains TWO shared sector models on combined ticker data:
-  Tech model:    36 technical + 14 event + 9 regime + ticker_id one-hot
-  Biotech model: 36 technical + 14 event + 9 regime + 5 FDA + ticker_id one-hot
+Step 6 / Phase 3 -- Multi-ticker XGBoost shared sector models (32 tickers)
+===========================================================================
+Trains FOUR shared sector models on combined ticker data:
+  Tech model:        36 technical + 14 event + 9 regime + 12 one-hot = 71 features
+  Biotech model:     36 technical + 14 event + 9 regime + 5 FDA + 10 one-hot = 74 features
+  Financials model:  36 technical + 14 event + 9 regime + 3 credit + 5 one-hot = 67 features
+  Energy model:      36 technical + 14 event + 9 regime + 7 energy + 5 one-hot = 71 features
 
 Walk-forward validation: 5 date-based folds, strictly chronological,
 no cross-ticker leakage (all tickers share the same date split points).
@@ -14,15 +16,23 @@ Phase 1c expansion (2026-04-04):
   Biotech: 5 original -> 10 tickers (added ABBV, BMY, GILD, AMGN, PFE)
   Saves as v2 to preserve v1 models intact.
 
+Phase 3 (energy sector):
+  Energy: 5 new tickers (XOM, CVX, COP, SLB, EOG)
+  Energy key feature: ENERGY_7 (WTI/natgas/rig count from FRED)
+  Saves as v1 (new sector).
+
 Output:
   models/tech/xgb_tech_shared_v2.pkl
   models/biotech/xgb_biotech_shared_v2.pkl
-  data/processed/{TICKER}_predictions.parquet (per ticker, all 22 tickers)
+  models/financials/xgb_financials_shared_v1.pkl
+  models/energy/xgb_energy_shared_v1.pkl
+  data/processed/{TICKER}_predictions.parquet (per ticker, all 32 tickers)
 
 Usage:
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\06_train.py
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\06_train.py tech
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\06_train.py biotech
+    C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\06_train.py energy
 """
 
 import sys
@@ -110,6 +120,19 @@ CREDIT_3 = [
     "credit_spread_zscore",     # 63-day rolling z-score
 ]
 
+# 7 energy commodity features (energy only)
+# Source: FRED DCOILWTICO (WTI daily 1986+), DHHNGSP (natgas daily 1997+) via 04_events.py
+# Coverage: WTI 1986+, natgas 1997+ (0.0 sentinel pre-1997)
+ENERGY_7 = [
+    "wti_price",        # WTI crude spot price (USD/barrel)
+    "wti_change_1w",    # 5-day pct change in WTI (%)
+    "wti_change_1m",    # 21-day pct change in WTI (%)
+    "wti_zscore_63d",   # 63-day rolling z-score of WTI
+    "natgas_price",     # Henry Hub spot price (USD/MMBtu)
+    "natgas_change_1w", # 5-day pct change in natgas (%)
+    "natgas_change_1m", # 21-day pct change in natgas (%)
+]
+
 # 9 regime features (Step 11: VIX, yield spread, sentiment, breadth, HMM)
 REGIME_9 = [
     "vix_close", "vix_change_1w", "vix_zscore_63d",
@@ -123,11 +146,12 @@ REGIME_9 = [
 TARGET = "dir_1w"
 N_SPLITS = 5
 
-# Phase 1c: model version per sector (tech/biotech = v2 retrain, financials = v1 new)
+# Model version per sector (tech/biotech = v2 retrain, financials/energy = v1 new)
 MODEL_VERSIONS = {
     "tech":       "v2",
     "biotech":    "v2",
     "financials": "v1",
+    "energy":     "v1",
 }
 
 # Baseline F1 scores to compare against
@@ -135,6 +159,7 @@ BASELINES = {
     "tech":       {"name": "AAPL-only XGBoost (aapl_ml Phase 2)", "f1": 0.375},
     "biotech":    {"name": "Random baseline",                      "f1": 0.333},
     "financials": {"name": "Random baseline",                      "f1": 0.333},
+    "energy":     {"name": "Random baseline",                      "f1": 0.333},
 }
 
 # Original tickers from prior training -- used to load reference metrics for comparison
@@ -142,6 +167,7 @@ PREV_TICKERS = {
     "tech":       ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META"],
     "biotech":    ["LLY", "MRNA", "BIIB", "REGN", "VRTX"],
     "financials": [],   # new sector -- no prior model to compare against
+    "energy":     [],   # new sector -- no prior model to compare against
 }
 
 
@@ -262,6 +288,8 @@ def build_feature_matrix(df: pd.DataFrame, sector: str) -> tuple[pd.DataFrame, l
         base_feats = base_feats + FDA_5
     elif sector == "financials":
         base_feats = base_feats + CREDIT_3
+    elif sector == "energy":
+        base_feats = base_feats + ENERGY_7
 
     # One-hot encode ticker_id
     ticker_dummies = pd.get_dummies(df["ticker_id"], prefix="ticker").astype(int)
@@ -548,10 +576,16 @@ def run_sector(sector: str) -> None:
     # 2. Build feature matrix (includes ticker_id one-hot)
     X_all, feature_names = build_feature_matrix(df_combined, sector)
 
+    sector_extra = ""
+    if sector == "biotech":
+        sector_extra = "+ FDA_5 "
+    elif sector == "financials":
+        sector_extra = "+ CREDIT_3 "
+    elif sector == "energy":
+        sector_extra = "+ ENERGY_7 "
     print(f"\n  Feature matrix: {X_all.shape[1]} features")
-    print(f"  Features: {SELECTED_36[:3]}... + EVENT_14 "
-          f"{'+ FDA_5 ' if sector == 'biotech' else ''}"
-          f"+ ticker_id one-hot")
+    print(f"  Features: {SELECTED_36[:3]}... + EVENT_14 + REGIME_9 "
+          f"{sector_extra}+ ticker_id one-hot")
 
     # 3. Split pre-holdout vs holdout
     pretrain_mask = df_combined.index < HOLDOUT_DATE
@@ -663,16 +697,18 @@ def run_sector(sector: str) -> None:
 # ── Entry points ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    section(f"market_ml -- XGBoost sector models (27 tickers, regime-aware)")
+    section(f"market_ml -- XGBoost sector models (32 tickers, regime-aware)")
     print(f"  Target:        {TARGET}")
     print(f"  Holdout:       >= {HOLDOUT_DATE.date()}")
     print(f"  WF splits:     {N_SPLITS}")
     print(f"  Tech:          36+14+9+12 one-hot = 71 features (12 tickers, v2)")
     print(f"  Biotech:       36+14+9+5 FDA+10 one-hot = 74 features (10 tickers, v2)")
-    print(f"  Financials:    36+14+9+3 credit+5 one-hot = 67 features (5 tickers, v1 new)")
+    print(f"  Financials:    36+14+9+3 credit+5 one-hot = 67 features (5 tickers, v1)")
+    print(f"  Energy:        36+14+9+7 energy+5 one-hot = 71 features (5 tickers, v1 new)")
     print(f"  Tech baseline:       F1={BASELINES['tech']['f1']}")
     print(f"  Biotech baseline:    F1={BASELINES['biotech']['f1']}")
     print(f"  Financials baseline: F1={BASELINES['financials']['f1']}")
+    print(f"  Energy baseline:     F1={BASELINES['energy']['f1']}")
 
     sectors_to_run = sys.argv[1:] or ["tech", "biotech"]
     for sector in sectors_to_run:

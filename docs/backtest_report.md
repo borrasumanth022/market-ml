@@ -11,15 +11,15 @@ Signal source: OOS walk-forward + holdout predictions from 06_train.py
 
 | Threshold | OOS Precision | OOS Trades | Holdout Precision | Holdout Trades | OOS Profitable? |
 |-----------|:-------------:|:----------:|:-----------------:|:--------------:|:---------------:|
-| 0.40 | 0.536 | 59,715 | 0.461 | 2,012 | no |
-| 0.45 | 0.561 | 45,048 | 0.504 | 936 | no |
-| 0.50 | 0.591 | 30,548 | 0.587 | 341 | no |
-| 0.55 | 0.620 | 18,765 | 0.654 | 104 | no <-- 60% flag |
-| 0.60 | 0.649 | 10,001 | 0.840 | 25 | no |
-| 0.65 | 0.677 | 4,657 | (1.000, <20t) | 6 | YES <-- OOS breakeven |
-| 0.70 | 0.693 | 1,875 | 0 trades | 0 | YES |
-| 0.75 | 0.723 | 672 | 0 trades | 0 | YES |
-| 0.80 | 0.754 | 187 | 0 trades | 0 | YES |
+| 0.40 | 0.541 | 67,952 | 0.460 | 2,422 | no |
+| 0.45 | 0.565 | 50,757 | 0.500 | 1,179 | no |
+| 0.50 | 0.594 | 34,019 | 0.575 | 438 | no |
+| 0.55 | 0.622 | 20,631 | 0.641 | 128 | no <-- 60% flag |
+| 0.60 | 0.649 | 10,849 | 0.821 | 28 | no |
+| 0.65 | 0.676 | 4,942 | (1.000, <20t) | 6 | YES <-- OOS breakeven |
+| 0.70 | 0.691 | 1,947 | 0 trades | 0 | YES |
+| 0.75 | 0.722 | 681 | 0 trades | 0 | YES |
+| 0.80 | 0.755 | 188 | 0 trades | 0 | YES |
 
 **Key finding:** OOS precision exceeds the 66.7% breakeven at threshold 0.65 and above. Holdout precision (~0.48-0.54) never reaches breakeven at any threshold tested.
 
@@ -36,10 +36,12 @@ Note: 0.55 precision = 60% < 66.7% breakeven -- **strategy loses money even on O
 |--------|--------|--------|:--------:|:----------:|:----------:|:------:|
 | WFC | financials | 1627 | 70.2% | +0.161% | +16.13% | +10.66% |
 | ORCL | tech | 1118 | 69.2% | +0.115% | +11.54% | +3.45% |
+| XOM | energy | 926 | 68.2% | +0.071% | +7.13% | +8.77% |
 | TSLA | tech | 0 | N/A | N/A | N/A | N/A |
 | MRNA | biotech | 0 | N/A | N/A | N/A | N/A |
 | JPM | financials | 1060 | 66.2% | -0.020% | -1.98% | +41.67% |
 | BAC | financials | 761 | 65.8% | -0.037% | -3.75% | +7.68% |
+| CVX | energy | 687 | 63.6% | -0.138% | -13.76% | +27.77% |
 | INTC | tech | 586 | 63.5% | -0.143% | -14.33% | -10.98% |
 | META | tech | 428 | 62.8% | -0.172% | -17.17% | +48.93% |
 | PFE | biotech | 1726 | 62.6% | -0.182% | -18.16% | +6.68% |
@@ -54,12 +56,15 @@ Note: 0.55 precision = 60% < 66.7% breakeven -- **strategy loses money even on O
 | GS | financials | 570 | 58.4% | -0.371% | -37.11% | +42.02% |
 | CRM | tech | 333 | 58.3% | -0.378% | -37.84% | -3.38% |
 | AMGN | biotech | 1176 | 57.6% | -0.409% | -40.94% | +11.85% |
+| COP | energy | 183 | 53.0% | -0.615% | -61.48% | +73.60% |
 | BIIB | biotech | 299 | 51.5% | -0.682% | -68.23% | +71.51% |
 | NVDA | tech | 14 | 50.0% | -0.750% | -75.00% | +86.15% |
 | AAPL | tech | 415 | 49.9% | -0.755% | -75.54% | +88.96% |
 | GILD | biotech | 326 | 49.4% | -0.778% | -77.76% | +60.03% |
+| SLB | energy | 59 | 49.1% | -0.788% | -78.81% | +109.83% |
 | REGN | biotech | 11 | 45.5% | -0.955% | -95.45% | -1.14% |
 | VRTX | biotech | 36 | 36.1% | -1.375% | -137.50% | +7.27% |
+| EOG | energy | 11 | 18.2% | -2.182% | -218.18% | -85.45% |
 | AMD | tech | 5 | 0.0% | -3.000% | -300.00% | +164.48% |
 
 ---
@@ -80,6 +85,7 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 | JPM | financials | 421 | 70.5% | +0.175% | +17.46% | +35.17% |
 | ADBE | tech | 213 | 69.5% | +0.127% | +12.68% | +41.18% |
 | MSFT | tech | 746 | 69.4% | +0.125% | +12.47% | +4.04% |
+| CVX | energy | 111 | 69.4% | +0.122% | +12.16% | +40.03% |
 | MS | financials | 52 | 69.2% | +0.115% | +11.54% | +12.43% |
 | PFE | biotech | 302 | 67.9% | +0.055% | +5.46% | -8.68% |
 | BAC | financials | 288 | 67.4% | +0.031% | +3.12% | +9.65% |
@@ -90,6 +96,7 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 | MRNA | biotech | 0 | N/A | N/A | N/A | N/A |
 | REGN | biotech | 0 | N/A | N/A | N/A | N/A |
 | ABBV | biotech | 3 | 66.7% | +0.000% | +0.00% | -155.26% |
+| XOM | energy | 162 | 65.4% | -0.056% | -5.56% | +10.88% |
 | ORCL | tech | 171 | 64.9% | -0.079% | -7.89% | -21.91% |
 | GS | financials | 111 | 63.1% | -0.162% | -16.22% | +53.51% |
 | BMY | biotech | 406 | 61.1% | -0.251% | -25.12% | +2.88% |
@@ -100,6 +107,9 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 | AAPL | tech | 21 | 47.6% | -0.857% | -85.71% | -6.78% |
 | BIIB | biotech | 20 | 40.0% | -1.200% | -120.00% | +37.10% |
 | VRTX | biotech | 5 | 40.0% | -1.200% | -120.00% | +290.59% |
+| COP | energy | 8 | 37.5% | -1.312% | -131.25% | +14.44% |
+| SLB | energy | 3 | 33.3% | -1.500% | -150.00% | +76.01% |
+| EOG | energy | 1 | 0.0% | -3.000% | -300.00% | -952.81% |
 
 ### Holdout (2024+)
 
@@ -132,6 +142,11 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 | PFE | biotech | 0 | N/A | N/A | N/A |
 | GS | financials | 0 | N/A | N/A | N/A |
 | MS | financials | 0 | N/A | N/A | N/A |
+| XOM | energy | 0 | N/A | N/A | N/A |
+| CVX | energy | 0 | N/A | N/A | N/A |
+| COP | energy | 0 | N/A | N/A | N/A |
+| SLB | energy | 0 | N/A | N/A | N/A |
+| EOG | energy | 0 | N/A | N/A | N/A |
 
 ### Sector Aggregation (OOS breakeven threshold)
 
@@ -140,12 +155,13 @@ First threshold where aggregate OOS precision >= 66.7% (strategy is OOS-profitab
 | tech | 1,609 | 69.4% | +0.121% | +12.12% | YES |
 | biotech | 1,223 | 60.8% | -0.263% | -26.25% | no |
 | financials | 1,825 | 70.9% | +0.191% | +19.07% | YES |
+| energy | 285 | 65.6% | -0.047% | -4.74% | no |
 
 ---
 
 ## Verdict
 
-**OOS (training-adjacent):** At threshold 0.65, 4,657 trades, win rate 67.7%, avg return +0.048%/trade (+4.77% per 100 trades).  OOS win rate exceeds 66.7% breakeven -- **profitable on training-adjacent data**.
+**OOS (training-adjacent):** At threshold 0.65, 4,942 trades, win rate 67.6%, avg return +0.042%/trade (+4.22% per 100 trades).  OOS win rate exceeds 66.7% breakeven -- **profitable on training-adjacent data**.
 
 **Holdout (2025+, clean):** 6 trades, win rate 100.0%, avg return +1.500%/trade (+150.00% per 100 trades).  **Holdout breakeven exceeded.**
 

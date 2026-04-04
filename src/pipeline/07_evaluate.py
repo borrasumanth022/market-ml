@@ -53,6 +53,7 @@ SECTOR_BASELINES = {
     "tech":       {"oos_f1": 0.402, "holdout_f1": 0.414},
     "biotech":    {"oos_f1": 0.403, "holdout_f1": 0.386},
     "financials": {"oos_f1": 0.437, "holdout_f1": 0.353},
+    "energy":     {"oos_f1": 0.402, "holdout_f1": 0.332},
 }
 
 
