@@ -70,8 +70,9 @@ from config.tickers import SECTORS, TICKER_SECTOR
 UNIVERSAL_DIR      = ROOT / "data" / "events" / "universal"
 BIOTECH_DIR        = ROOT / "data" / "events" / "biotech"
 FINANCIALS_DIR     = ROOT / "data" / "events" / "financials"
-ENERGY_DIR         = ROOT / "data" / "events" / "energy"
-CONSUMER_STAPLES_DIR = ROOT / "data" / "events" / "consumer_staples"
+ENERGY_DIR            = ROOT / "data" / "events" / "energy"
+CONSUMER_STAPLES_DIR  = ROOT / "data" / "events" / "consumer_staples"
+SEMICONDUCTORS_DIR    = ROOT / "data" / "events" / "semiconductors"
 
 # ── API constants ──────────────────────────────────────────────────────────────
 FRED_BASE       = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
@@ -702,6 +703,118 @@ except Exception as exc:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PART F -- Semiconductor event data (PMI proxy + semiconductor cycle)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Sources (FRED):
+#   IPMAN      : Industrial Production: Manufacturing  -- monthly, 1972-01+
+#                Used as PMI proxy (FRED does not provide ISM Manufacturing PMI
+#                via CSV download; IPMAN tracks manufacturing activity cycle).
+#                pmi_above_50: IPMAN >= 100 (above 2017=100 baseline = expansion)
+#   IPG3344N   : Industrial Production: Semiconductors and Related Electronic
+#                Components (NAICS 3344) -- monthly, 1972-01+
+#                Direct semiconductor cycle indicator.
+# Coverage: both series 1972+, covers full 1995+ training window (no sentinel needed).
+# NaN sentinel: 0.0 applied for any NaN rows (pre-coverage safety).
+# Saved to: data/events/semiconductors/semiconductor_events.parquet
+
+section("PART F -- Semiconductor Events (PMI proxy + Semiconductor Cycle)")
+
+print(f"  Sources (FRED):")
+print(f"    IPMAN      : Industrial Production: Manufacturing -- monthly, 1972-01+")
+print(f"    IPG3344N   : Industrial Production: Semiconductors (NAICS 3344) -- monthly, 1972-01+")
+print(f"  Note: FRED NAPM (ISM PMI) and PHLISMPMI not available via CSV download.")
+print(f"        IPMAN used as manufacturing activity proxy (same economic signal).")
+print(f"  Saved to: data/events/semiconductors/semiconductor_events.parquet")
+print()
+
+semi_path = SEMICONDUCTORS_DIR / "semiconductor_events.parquet"
+semi_ok   = False
+
+try:
+    print(f"  Fetching IPMAN (manufacturing IP as PMI proxy) ... ", end="", flush=True)
+    url_ipman = FRED_BASE.format("IPMAN")
+    ipman_raw = pd.read_csv(
+        url_ipman,
+        parse_dates=["observation_date"],
+        index_col="observation_date",
+    )
+    ipman_raw.columns = ["IPMAN"]
+    ipman_raw["IPMAN"] = pd.to_numeric(ipman_raw["IPMAN"], errors="coerce")
+    ipman_raw = ipman_raw.dropna()
+    ipman_raw = ipman_raw[ipman_raw.index >= "1972-01-01"].sort_index()
+    print(f"OK  ({len(ipman_raw)} obs, {ipman_raw.index[-1].date()})")
+
+    print(f"  Fetching IPG3344N (semiconductor production index) ... ", end="", flush=True)
+    url_semi = FRED_BASE.format("IPG3344N")
+    semi_raw = pd.read_csv(
+        url_semi,
+        parse_dates=["observation_date"],
+        index_col="observation_date",
+    )
+    semi_raw.columns = ["IPG3344N"]
+    semi_raw["IPG3344N"] = pd.to_numeric(semi_raw["IPG3344N"], errors="coerce")
+    semi_raw = semi_raw.dropna()
+    semi_raw = semi_raw[semi_raw.index >= "1972-01-01"].sort_index()
+    print(f"OK  ({len(semi_raw)} obs, {semi_raw.index[-1].date()})")
+
+    # Build a full daily index spanning both series
+    all_dates = [ipman_raw.index, semi_raw.index]
+    full_start = min(s.min() for s in all_dates)
+    full_end   = max(s.max() for s in all_dates)
+    full_idx   = pd.date_range(full_start, full_end, freq="D")
+
+    def _monthly_to_daily(series):
+        """Reindex monthly series to daily, forward-fill within each month."""
+        return (
+            series
+            .reindex(series.index.union(full_idx))
+            .sort_index()
+            .ffill()
+            .reindex(full_idx)
+        )
+
+    # IPMAN -- PMI proxy
+    ipman_daily = _monthly_to_daily(ipman_raw["IPMAN"])
+    # pmi_change_3m: 63-trading-day change (approx 3 months, monthly data -> use 3 obs)
+    # Use calendar-day shift (91 days) on the monthly-derived daily series
+    ipman_3m_ago = ipman_daily.shift(91)   # 91 calendar days ~ 3 months
+    pmi_change_3m = (ipman_daily - ipman_3m_ago) / ipman_3m_ago.abs() * 100.0
+    pmi_above_50  = (ipman_daily >= 100.0).astype(float)  # >= 100 = at/above baseline
+
+    # IPG3344N -- semiconductor cycle
+    semi_daily = _monthly_to_daily(semi_raw["IPG3344N"])
+    semi_3m_ago = semi_daily.shift(91)
+    semi_cycle_change_3m = (semi_daily - semi_3m_ago) / semi_3m_ago.abs() * 100.0
+
+    semi_events_df = pd.DataFrame({
+        "pmi_level":             ipman_daily,
+        "pmi_change_3m":         pmi_change_3m,
+        "pmi_above_50":          pmi_above_50,
+        "semi_cycle_level":      semi_daily,
+        "semi_cycle_change_3m":  semi_cycle_change_3m,
+    }, index=full_idx)
+    semi_events_df.index.name = "date"
+
+    SEMICONDUCTORS_DIR.mkdir(parents=True, exist_ok=True)
+    semi_events_df.to_parquet(semi_path, engine="pyarrow", index=True)
+    size_kb = semi_path.stat().st_size / 1024
+
+    print(f"\n  Saved semiconductor_events: {len(semi_events_df):,} daily rows -> "
+          f"{semi_path.relative_to(ROOT)} ({size_kb:.0f} KB)")
+    print(f"  IPMAN valid rows    : {ipman_daily.notna().sum():,}  "
+          f"(from {ipman_raw.index[0].date()})")
+    print(f"  IPG3344N valid rows : {semi_daily.notna().sum():,}  "
+          f"(from {semi_raw.index[0].date()})")
+    print(f"  Columns: {list(semi_events_df.columns)}")
+    semi_ok = True
+except Exception as exc:
+    print(f"FAILED: {exc}")
+    print("  [WARN] semiconductor_events.parquet not saved -- "
+          "semiconductor features will use sentinel 0.0")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -742,4 +855,6 @@ if energy_ok and energy_path.exists():
     print(f"    {energy_path.relative_to(ROOT)}")
 if cs_staples_ok and cs_staples_path.exists():
     print(f"    {cs_staples_path.relative_to(ROOT)}")
+if semi_ok and semi_path.exists():
+    print(f"    {semi_path.relative_to(ROOT)}")
 print(f"\nStep 4 complete. Next step: src/pipeline/05_event_features.py\n")

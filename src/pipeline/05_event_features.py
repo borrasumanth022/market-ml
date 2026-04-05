@@ -73,6 +73,7 @@ FDA_EVENTS           = ROOT / "data" / "events" / "biotech"          / "fda_even
 CREDIT_SPREADS       = ROOT / "data" / "events" / "financials"       / "credit_spreads.parquet"
 ENERGY_EVENTS        = ROOT / "data" / "events" / "energy"           / "energy_events.parquet"
 CONSUMER_STAPLES_EVENTS = ROOT / "data" / "events" / "consumer_staples" / "consumer_staples_events.parquet"
+SEMICONDUCTOR_EVENTS    = ROOT / "data" / "events" / "semiconductors"   / "semiconductor_events.parquet"
 
 # ── Constants (inherited from aapl_ml settings) ───────────────────────────────
 CAP_EARNINGS     = 90      # sentinel days when no earnings history exists
@@ -556,6 +557,61 @@ def add_consumer_staples_features(feat: pd.DataFrame) -> None:
     print(f"    sentiment valid rows    : {n_valid_sent:,}/{len(trading_dates):,}")
 
 
+def add_semiconductor_features(feat: pd.DataFrame) -> None:
+    """
+    SEMI_5 -- Semiconductor event features (semiconductors sector only).
+    Sources: FRED IPMAN (Industrial Production: Manufacturing, monthly 1972+)
+             used as PMI proxy; FRED NAPM/PHLISMPMI not available via CSV download.
+             FRED IPG3344N (Industrial Production: Semiconductors NAICS 3344, monthly 1972+)
+             as direct semiconductor cycle indicator.
+    Saved as wide-format daily DataFrame by 04_events.py.
+
+    Coverage:
+      IPMAN (pmi_*)       : 1972-01+ -- covers full 1995+ training window, no sentinel needed
+      IPG3344N (semi_*)   : 1972-01+ -- covers full 1995+ training window, no sentinel needed
+
+    Features added (SEMI_5):
+      pmi_level            : IPMAN level (manufacturing activity, 2017=100 baseline)
+      pmi_change_3m        : 3-month pct change in IPMAN (positive = expansion)
+      pmi_above_50         : 1.0 if IPMAN >= 100 (at/above 2017 baseline = expansion), else 0.0
+      semi_cycle_level     : IPG3344N level (semiconductor production index, 2017=100)
+      semi_cycle_change_3m : 3-month pct change in IPG3344N (positive = upcycle)
+
+    NaN sentinel: 0.0 for any NaN rows (safety guard; both series predate 1995).
+    """
+    trading_dates = feat.index
+
+    if not SEMICONDUCTOR_EVENTS.exists():
+        print(f"    [WARN] semiconductor_events.parquet not found -- "
+              f"run 04_events.py first (sentinel 0.0 used)")
+        for col in ["pmi_level", "pmi_change_3m", "pmi_above_50",
+                    "semi_cycle_level", "semi_cycle_change_3m"]:
+            feat[col] = 0.0
+        return
+
+    semi_df = pd.read_parquet(SEMICONDUCTOR_EVENTS, engine="pyarrow")
+    semi_df.index = pd.to_datetime(semi_df.index).normalize()
+
+    def _align(series: pd.Series) -> pd.Series:
+        """Forward-fill a daily/monthly series onto ticker trading dates."""
+        return (
+            series
+            .reindex(series.index.union(trading_dates))
+            .sort_index()
+            .ffill()
+            .reindex(trading_dates)
+        )
+
+    for col in ["pmi_level", "pmi_change_3m", "pmi_above_50",
+                "semi_cycle_level", "semi_cycle_change_3m"]:
+        feat[col] = _align(semi_df[col]).fillna(0.0).values
+
+    n_valid_pmi  = (feat["pmi_level"] != 0.0).sum()
+    n_valid_semi = (feat["semi_cycle_level"] != 0.0).sum()
+    print(f"    PMI (IPMAN) valid rows        : {n_valid_pmi:,}/{len(trading_dates):,}")
+    print(f"    Semi cycle (IPG3344N) valid   : {n_valid_semi:,}/{len(trading_dates):,}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Coverage report
 # ══════════════════════════════════════════════════════════════════════════════
@@ -644,6 +700,12 @@ def process_ticker(
     if is_consumer_staples:
         section("D4. Consumer staples features (consumer_staples)")
         add_consumer_staples_features(feat)
+
+    # D5. Semiconductor features (semiconductors only)
+    is_semiconductors = (sector == "semiconductors")
+    if is_semiconductors:
+        section("D5. Semiconductor features (semiconductors)")
+        add_semiconductor_features(feat)
 
     # E. Regime features from Step 11 (VIX, yield spread, sentiment, breadth, HMM)
     if regime_df is not None and len(regime_df) > 0:

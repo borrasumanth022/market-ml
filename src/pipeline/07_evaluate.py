@@ -55,6 +55,7 @@ SECTOR_BASELINES = {
     "financials": {"oos_f1": 0.437, "holdout_f1": 0.353},
     "energy":           {"oos_f1": 0.402, "holdout_f1": 0.332},
     "consumer_staples": {"oos_f1": 0.536, "holdout_f1": 0.352},
+    "semiconductors":   {"oos_f1": 0.374, "holdout_f1": 0.377},
 }
 
 

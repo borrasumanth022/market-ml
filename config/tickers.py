@@ -36,6 +36,12 @@ SECTORS = {
         "universal_events": ["fed_rate", "cpi", "retail_sales", "consumer_confidence"],
         "sector_events": ["retail_sales", "consumer_confidence"],
     },
+    "semiconductors": {
+        "tickers": ["TSM", "ASML", "AMAT", "LRCX", "KLAC"],
+        "description": "Large cap global semiconductor equipment and foundry",
+        "universal_events": ["fed_rate", "cpi", "gdp", "unemployment"],
+        "sector_events": ["semiconductor_cycle", "pmi"],
+    },
 }
 
 # Sector each ticker belongs to

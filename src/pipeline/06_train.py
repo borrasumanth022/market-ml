@@ -143,6 +143,18 @@ STAPLES_4 = [
     "consumer_sentiment_change_3m", # 63-day change in consumer sentiment
 ]
 
+# 5 semiconductor features (semiconductors sector only)
+# Sources: FRED IPMAN (manufacturing IP as PMI proxy, monthly 1972+)
+#          FRED IPG3344N (semiconductor production index NAICS 3344, monthly 1972+)
+# Coverage: both 1972+, covers full training window (no sentinel needed in practice)
+SEMI_5 = [
+    "pmi_level",             # IPMAN level (manufacturing activity, 2017=100)
+    "pmi_change_3m",         # 3-month pct change in IPMAN (positive = expansion)
+    "pmi_above_50",          # 1.0 if IPMAN >= 100 (at/above baseline), else 0.0
+    "semi_cycle_level",      # IPG3344N level (semiconductor production, 2017=100)
+    "semi_cycle_change_3m",  # 3-month pct change in IPG3344N (positive = upcycle)
+]
+
 # 9 regime features (Step 11: VIX, yield spread, sentiment, breadth, HMM)
 REGIME_9 = [
     "vix_close", "vix_change_1w", "vix_zscore_63d",
@@ -163,6 +175,7 @@ MODEL_VERSIONS = {
     "financials":       "v1",
     "energy":           "v1",
     "consumer_staples": "v1",
+    "semiconductors":   "v1",
 }
 
 # Baseline F1 scores to compare against
@@ -172,6 +185,7 @@ BASELINES = {
     "financials":       {"name": "Random baseline",                      "f1": 0.333},
     "energy":           {"name": "Random baseline",                      "f1": 0.333},
     "consumer_staples": {"name": "Random baseline",                      "f1": 0.333},
+    "semiconductors":   {"name": "Random baseline",                      "f1": 0.333},
 }
 
 # Original tickers from prior training -- used to load reference metrics for comparison
@@ -181,6 +195,7 @@ PREV_TICKERS = {
     "financials":       [],   # new sector -- no prior model to compare against
     "energy":           [],   # new sector -- no prior model to compare against
     "consumer_staples": [],   # new sector -- no prior model to compare against
+    "semiconductors":   [],   # new sector -- no prior model to compare against
 }
 
 
@@ -305,6 +320,8 @@ def build_feature_matrix(df: pd.DataFrame, sector: str) -> tuple[pd.DataFrame, l
         base_feats = base_feats + ENERGY_7
     elif sector == "consumer_staples":
         base_feats = base_feats + STAPLES_4
+    elif sector == "semiconductors":
+        base_feats = base_feats + SEMI_5
 
     # One-hot encode ticker_id
     ticker_dummies = pd.get_dummies(df["ticker_id"], prefix="ticker").astype(int)
@@ -600,6 +617,8 @@ def run_sector(sector: str) -> None:
         sector_extra = "+ ENERGY_7 "
     elif sector == "consumer_staples":
         sector_extra = "+ STAPLES_4 "
+    elif sector == "semiconductors":
+        sector_extra = "+ SEMI_5 "
     print(f"\n  Feature matrix: {X_all.shape[1]} features")
     print(f"  Features: {SELECTED_36[:3]}... + EVENT_14 + REGIME_9 "
           f"{sector_extra}+ ticker_id one-hot")
@@ -714,7 +733,7 @@ def run_sector(sector: str) -> None:
 # ── Entry points ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    section(f"market_ml -- XGBoost sector models (37 tickers, regime-aware)")
+    section(f"market_ml -- XGBoost sector models (42 tickers, regime-aware)")
     print(f"  Target:        {TARGET}")
     print(f"  Holdout:       >= {HOLDOUT_DATE.date()}")
     print(f"  WF splits:     {N_SPLITS}")
@@ -722,12 +741,14 @@ def main() -> None:
     print(f"  Biotech:          36+14+9+5 FDA+10 one-hot = 74 features (10 tickers, v2)")
     print(f"  Financials:       36+14+9+3 credit+5 one-hot = 67 features (5 tickers, v1)")
     print(f"  Energy:           36+14+9+7 energy+5 one-hot = 71 features (5 tickers, v1)")
-    print(f"  Consumer Staples: 36+14+9+4 staples+5 one-hot = 68 features (5 tickers, v1 new)")
-    print(f"  Tech baseline:             F1={BASELINES['tech']['f1']}")
-    print(f"  Biotech baseline:          F1={BASELINES['biotech']['f1']}")
-    print(f"  Financials baseline:       F1={BASELINES['financials']['f1']}")
-    print(f"  Energy baseline:           F1={BASELINES['energy']['f1']}")
-    print(f"  Consumer Staples baseline: F1={BASELINES['consumer_staples']['f1']}")
+    print(f"  Consumer Staples: 36+14+9+4 staples+5 one-hot = 68 features (5 tickers, v1)")
+    print(f"  Semiconductors:   36+14+9+5 semi+5 one-hot = 69 features (5 tickers, v1 new)")
+    print(f"  Tech baseline:               F1={BASELINES['tech']['f1']}")
+    print(f"  Biotech baseline:            F1={BASELINES['biotech']['f1']}")
+    print(f"  Financials baseline:         F1={BASELINES['financials']['f1']}")
+    print(f"  Energy baseline:             F1={BASELINES['energy']['f1']}")
+    print(f"  Consumer Staples baseline:   F1={BASELINES['consumer_staples']['f1']}")
+    print(f"  Semiconductors baseline:     F1={BASELINES['semiconductors']['f1']}")
 
     sectors_to_run = sys.argv[1:] or ["tech", "biotech"]
     for sector in sectors_to_run:

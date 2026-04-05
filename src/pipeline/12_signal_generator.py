@@ -11,7 +11,7 @@ Timing edge cases handled:
   Missed several Mondays : only generates signals for the current week; prints how
                            many Mondays were missed; does NOT backfill past weeks.
 
-Loads the trained models, fetches the latest weekly OHLCV for all 37 tickers,
+Loads the trained models, fetches the latest weekly OHLCV for all 42 tickers,
 computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + optional sector extras),
 and outputs iron condor signals at confidence threshold 0.60.
 Appends every signal (FIRE or NO_FIRE) to data/signals/signal_log.parquet.
@@ -26,6 +26,10 @@ Models used (Phase 4a):
   financials        (5 tickers) -> models/financials/xgb_financials_shared_v1.pkl       (67 features)
   energy            (5 tickers) -> models/energy/xgb_energy_shared_v1.pkl               (71 features)
   consumer_staples  (5 tickers) -> models/consumer_staples/xgb_consumer_staples_shared_v1.pkl (68 features)
+  semiconductors    (5 tickers) -> models/semiconductors/xgb_semiconductors_shared_v1.pkl     (69 features)
+  NOTE: all 5 semiconductor tickers are in EXCLUDED_FROM_SIGNALS (OOS WR ~43% at threshold 0.60,
+        far below 66.7% breakeven -- high-volatility cyclical stocks have low Sideways base rate).
+        They remain in training; their cycle data benefits cross-sector signal quality.
   VRTX finetuned v1 RETIRED: v2 shared biotech now routes VRTX (holdout F1 0.410).
     The finetuned model's +0.043 advantage was measured on 2024 data (now in training).
   Each model stores its own feature_names list -- the feature vector is built
@@ -35,8 +39,9 @@ Kelly Criterion position sizing (half-Kelly, capped at 20% of portfolio):
   kelly_fraction   = (WIN_RATE / AVG_LOSS) - (LOSS_RATE / AVG_WIN)
   recommended_size = min(kelly_fraction * 0.5, MAX_POSITION_PCT)
 
-  Using WIN_RATE = 0.695 from Phase 4a OOS backtest (16,983 trades at threshold 0.60, WR=69.5%).
-  Threshold 0.60 is the first OOS breakeven threshold (66.7%) in the Phase 4a 37-ticker universe.
+  Using WIN_RATE = 0.695 from Phase 4a/4b OOS backtest (16,983 non-semi trades at 0.60, WR=69.5%).
+  Threshold 0.60 is the first OOS breakeven threshold (66.7%) in the active signal universe
+  (37 tickers -- excludes semiconductors which have OOS WR ~43%, far below breakeven).
 
 Known approximations:
   - macro_stress_score z-score computed over the 500-day OHLCV window, not the
@@ -98,7 +103,14 @@ CLASS_NAMES    = ["Bear", "Sideways", "Bull"]
 # TSLA: F1=0.338 (-0.059), extreme volatility + short history (IPO 2010)
 # MRNA: F1=0.329 (-0.080), very short history (IPO 2018, only 1,327 OOS rows)
 # COST: F1=0.468 (-0.067 below consumer_staples avg 0.535) -- fine-tuning deferred to Phase 5
-EXCLUDED_FROM_SIGNALS = {"AMD", "TSLA", "MRNA", "COST"}
+# TSM:  semiconductors OOS Sideways WR=39.8% at threshold 0.60 (low Sideways base rate ~35%)
+# ASML: semiconductors OOS Sideways WR=45.1% at threshold 0.60 (cyclical, high directionality)
+# AMAT: semiconductors OOS Sideways WR=41.2% at threshold 0.60 (all semi equipment stocks)
+# LRCX: semiconductors OOS Sideways WR=36.0% at threshold 0.60 (worst in sector)
+# KLAC: semiconductors OOS Sideways WR=48.7% at threshold 0.60 (best in semi, still below BE)
+# Semiconductor sector OOS WR=42.9% -- iron condor strategy loses money on semi signals.
+# All 5 remain in training; their cycle/PMI features benefit cross-ticker regime signal.
+EXCLUDED_FROM_SIGNALS = {"AMD", "TSLA", "MRNA", "COST", "TSM", "ASML", "AMAT", "LRCX", "KLAC"}
 
 # 8-week rolling trade cap -- prevents one ticker dominating signals
 # No single ticker may represent >= CAP_MAX_SHARE of fires in the last CAP_WEEKS.
@@ -142,6 +154,7 @@ _add_fda             = _event_mod.add_fda_features          # (feat, fda_df, tic
 _add_credit_spread   = _event_mod.add_credit_spread_features  # (feat) -> None
 _add_energy               = _event_mod.add_energy_features               # (feat) -> None
 _add_consumer_staples     = _event_mod.add_consumer_staples_features      # (feat) -> None
+_add_semiconductor        = _event_mod.add_semiconductor_features          # (feat) -> None
 
 
 # ── Printers ──────────────────────────────────────────────────────────────────
@@ -230,7 +243,7 @@ def count_missed_mondays(signal_date: pd.Timestamp) -> int:
 
 def load_models() -> dict:
     """
-    Load all saved models from models/ directory (Phase 4a).
+    Load all saved models from models/ directory (Phase 4b).
     All tickers route to their sector shared model.
     VRTX finetuned v1 retired: v2 shared biotech used for VRTX.
     Fails loudly if any required model file is missing.
@@ -242,6 +255,7 @@ def load_models() -> dict:
         "financials":       MODELS_DIR / "financials"       / "xgb_financials_shared_v1.pkl",
         "energy":           MODELS_DIR / "energy"           / "xgb_energy_shared_v1.pkl",
         "consumer_staples": MODELS_DIR / "consumer_staples" / "xgb_consumer_staples_shared_v1.pkl",
+        "semiconductors":   MODELS_DIR / "semiconductors"   / "xgb_semiconductors_shared_v1.pkl",
     }
     for label, path in paths.items():
         if not path.exists():
@@ -487,6 +501,7 @@ def compute_ticker_feature_row(
     is_financials       = (sector == "financials")
     is_energy           = (sector == "energy")
     is_consumer_staples = (sector == "consumer_staples")
+    is_semiconductors   = (sector == "semiconductors")
 
     # --- 1. Technical features ---
     tech_df = _build_tech_features(ohlcv, ticker)
@@ -521,6 +536,8 @@ def compute_ticker_feature_row(
         _add_energy(feat)
     if is_consumer_staples:
         _add_consumer_staples(feat)
+    if is_semiconductors:
+        _add_semiconductor(feat)
 
     # AMZN EPS outlier: same clip applied during training
     if ticker == "AMZN" and "last_eps_surprise_pct" in feat.columns:
@@ -880,7 +897,7 @@ def main() -> None:
 
     section("ManthIQ Step 12 -- Weekly Iron Condor Signal Generator")
     print(f"  Threshold      : {SIGNAL_THRESHOLD}")
-    print(f"  Win rate basis : {WIN_RATE:.1%} (Phase 4a OOS, 16,983 trades at threshold 0.60)")
+    print(f"  Win rate basis : {WIN_RATE:.1%} (Phase 4a OOS, 16,983 non-semi trades at threshold 0.60)")
     print(f"  Kelly full     : {KELLY_FULL:.4f}  ({KELLY_FULL*100:.1f}%)")
     print(f"  Kelly half     : {KELLY_HALF:.4f}  ({KELLY_HALF*100:.1f}%)")
     print(f"  Recommended sz : {kelly_rec_pct:.1f}%  (half-Kelly capped at {MAX_POSITION_PCT:.0%})")
