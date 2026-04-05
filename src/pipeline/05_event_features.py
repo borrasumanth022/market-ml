@@ -68,10 +68,11 @@ import yfinance as yf
 from config.tickers import SECTORS, TICKER_SECTOR
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROCESSED_DIR    = ROOT / "data" / "processed"
-FDA_EVENTS       = ROOT / "data" / "events" / "biotech"     / "fda_events.parquet"
-CREDIT_SPREADS   = ROOT / "data" / "events" / "financials"  / "credit_spreads.parquet"
-ENERGY_EVENTS    = ROOT / "data" / "events" / "energy"      / "energy_events.parquet"
+PROCESSED_DIR        = ROOT / "data" / "processed"
+FDA_EVENTS           = ROOT / "data" / "events" / "biotech"          / "fda_events.parquet"
+CREDIT_SPREADS       = ROOT / "data" / "events" / "financials"       / "credit_spreads.parquet"
+ENERGY_EVENTS        = ROOT / "data" / "events" / "energy"           / "energy_events.parquet"
+CONSUMER_STAPLES_EVENTS = ROOT / "data" / "events" / "consumer_staples" / "consumer_staples_events.parquet"
 
 # ── Constants (inherited from aapl_ml settings) ───────────────────────────────
 CAP_EARNINGS     = 90      # sentinel days when no earnings history exists
@@ -499,6 +500,62 @@ def add_energy_features(feat: pd.DataFrame) -> None:
           f"(pre-1997 -> 0.0 sentinel)")
 
 
+def add_consumer_staples_features(feat: pd.DataFrame) -> None:
+    """
+    STAPLES_4 -- Consumer staples event features (consumer_staples sector only).
+    Source: FRED RSXFS (retail sales monthly 1992+) + UMCSENT (sentiment monthly 1978+),
+            saved as wide-format daily DataFrame by 04_events.py.
+
+    Coverage:
+      retail_sales_* : 1992-01+ (pre-1992 -> sentinel 0.0)
+      consumer_sentiment_* : 1978-01+ (full history, no sentinel needed)
+
+    Features added (STAPLES_4):
+      retail_sales_mom_change   : month-over-month pct change in retail sales (21-day approx)
+      retail_sales_zscore_3m    : 63-day rolling z-score of retail sales level
+      consumer_sentiment_level  : University of Michigan sentiment index value
+      consumer_sentiment_change_3m : 63-day change in sentiment level
+
+    NaN sentinel: 0.0 for pre-1992 retail_sales rows.
+    """
+    trading_dates = feat.index
+
+    if not CONSUMER_STAPLES_EVENTS.exists():
+        print(f"    [WARN] consumer_staples_events.parquet not found -- "
+              f"run 04_events.py first (sentinel 0.0 used)")
+        for col in ["retail_sales_mom_change", "retail_sales_zscore_3m",
+                    "consumer_sentiment_level", "consumer_sentiment_change_3m"]:
+            feat[col] = 0.0
+        return
+
+    cs_df = pd.read_parquet(CONSUMER_STAPLES_EVENTS, engine="pyarrow")
+    cs_df.index = pd.to_datetime(cs_df.index).normalize()
+
+    def _align(series: pd.Series) -> pd.Series:
+        """Forward-fill a daily/monthly series onto ticker trading dates."""
+        return (
+            series
+            .reindex(series.index.union(trading_dates))
+            .sort_index()
+            .ffill()
+            .reindex(trading_dates)
+        )
+
+    # Retail sales features (pre-1992 NaN -> 0.0 sentinel)
+    for col in ["retail_sales_mom_change", "retail_sales_zscore_3m"]:
+        feat[col] = _align(cs_df[col]).fillna(0.0).values
+
+    # Sentiment features (full history back to 1978; sentinel only for earliest rows)
+    for col in ["consumer_sentiment_level", "consumer_sentiment_change_3m"]:
+        feat[col] = _align(cs_df[col]).fillna(0.0).values
+
+    n_valid_rs   = (feat["retail_sales_mom_change"] != 0.0).sum()
+    n_valid_sent = (feat["consumer_sentiment_level"] != 0.0).sum()
+    print(f"    retail sales valid rows : {n_valid_rs:,}/{len(trading_dates):,} "
+          f"(pre-1992 -> 0.0 sentinel)")
+    print(f"    sentiment valid rows    : {n_valid_sent:,}/{len(trading_dates):,}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Coverage report
 # ══════════════════════════════════════════════════════════════════════════════
@@ -581,6 +638,12 @@ def process_ticker(
     if is_energy:
         section("D3. Energy commodity features (energy)")
         add_energy_features(feat)
+
+    # D4. Consumer staples features (consumer_staples only)
+    is_consumer_staples = (sector == "consumer_staples")
+    if is_consumer_staples:
+        section("D4. Consumer staples features (consumer_staples)")
+        add_consumer_staples_features(feat)
 
     # E. Regime features from Step 11 (VIX, yield spread, sentiment, breadth, HMM)
     if regime_df is not None and len(regime_df) > 0:

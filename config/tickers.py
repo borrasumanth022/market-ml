@@ -30,6 +30,12 @@ SECTORS = {
         "universal_events": ["fed_rate", "oil_price", "natural_gas", "rig_count"],
         "sector_events": ["oil_price", "natural_gas", "rig_count"],
     },
+    "consumer_staples": {
+        "tickers": ["KO", "PG", "WMT", "COST", "CL"],
+        "description": "Large cap US consumer staples",
+        "universal_events": ["fed_rate", "cpi", "retail_sales", "consumer_confidence"],
+        "sector_events": ["retail_sales", "consumer_confidence"],
+    },
 }
 
 # Sector each ticker belongs to

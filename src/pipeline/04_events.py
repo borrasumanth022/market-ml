@@ -29,6 +29,13 @@ Part D -- Energy commodity data (FRED) for Energy sector
   Wide-format DataFrame (one column per series); feature engineering done in step 5.
   NaN sentinels: natgas pre-1997 -> 0.0 (applied in step 5)
 
+Part E -- Consumer staples event data (FRED)
+  RSXFS  : Advance Retail Sales ex food services (monthly, 1992+)
+  UMCSENT: University of Michigan Consumer Sentiment (monthly, 1978+)
+  Output: data/events/consumer_staples/consumer_staples_events.parquet
+  Wide-format daily DataFrame; feature engineering done in step 5.
+  NaN sentinels: pre-1992 rows -> 0.0 (applied in step 5)
+
 Schema for event files (Parts A and B):
   date           DatetimeIndex
   event_type     str   (macro / fda_action)
@@ -60,10 +67,11 @@ import requests
 from config.tickers import SECTORS, TICKER_SECTOR
 
 # ── Output paths ───────────────────────────────────────────────────────────────
-UNIVERSAL_DIR   = ROOT / "data" / "events" / "universal"
-BIOTECH_DIR     = ROOT / "data" / "events" / "biotech"
-FINANCIALS_DIR  = ROOT / "data" / "events" / "financials"
-ENERGY_DIR      = ROOT / "data" / "events" / "energy"
+UNIVERSAL_DIR      = ROOT / "data" / "events" / "universal"
+BIOTECH_DIR        = ROOT / "data" / "events" / "biotech"
+FINANCIALS_DIR     = ROOT / "data" / "events" / "financials"
+ENERGY_DIR         = ROOT / "data" / "events" / "energy"
+CONSUMER_STAPLES_DIR = ROOT / "data" / "events" / "consumer_staples"
 
 # ── API constants ──────────────────────────────────────────────────────────────
 FRED_BASE       = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
@@ -612,6 +620,88 @@ except Exception as exc:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PART E -- Consumer Staples event data (Retail Sales + Consumer Sentiment)
+# ══════════════════════════════════════════════════════════════════════════════
+
+section("PART E -- Consumer Staples Events (Retail Sales + Consumer Sentiment)")
+
+print("""
+  Sources (FRED):
+    RSXFS   : Advance Retail Sales ex food services -- monthly, 1992-01+
+    UMCSENT : Univ. of Michigan Consumer Sentiment  -- monthly, 1978-01+
+  Coverage notes:
+    retail_sales pre-1992 : NaN sentinel 0.0 applied in 05_event_features.py
+    UMCSENT has full history back to 1978; no sentinel needed
+  Saved to: data/events/consumer_staples/consumer_staples_events.parquet  (wide-format daily)
+""")
+
+cs_staples_path = CONSUMER_STAPLES_DIR / "consumer_staples_events.parquet"
+cs_staples_ok   = False
+
+try:
+    # ── Retail Sales (RSXFS) ───────────────────────────────────────────────
+    print("  Fetching RSXFS (advance retail sales ex food services) ...", end=" ", flush=True)
+    rsxfs_raw = fetch_fred("RSXFS")
+    rsxfs_raw = rsxfs_raw[rsxfs_raw.index >= "1992-01-01"]
+    print(f"OK  ({len(rsxfs_raw):,} obs, {rsxfs_raw.index[0].date()} to {rsxfs_raw.index[-1].date()})")
+
+    # ── Consumer Sentiment (UMCSENT) ───────────────────────────────────────
+    print("  Fetching UMCSENT (consumer sentiment) ...", end=" ", flush=True)
+    umcsent_raw = fetch_fred("UMCSENT")
+    umcsent_raw = umcsent_raw[umcsent_raw.index >= "1978-01-01"]
+    print(f"OK  ({len(umcsent_raw):,} obs, {umcsent_raw.index[0].date()} to {umcsent_raw.index[-1].date()})")
+
+    # ── Build contiguous daily index covering both series ─────────────────
+    date_start = min(rsxfs_raw.index[0], umcsent_raw.index[0])
+    date_end   = max(rsxfs_raw.index[-1], umcsent_raw.index[-1])
+    full_idx   = pd.date_range(date_start, date_end, freq="D")
+    full_idx.name = "date"
+
+    # Monthly series forward-filled to daily (each day sees most recent release)
+    rsxfs_daily  = rsxfs_raw.reindex(full_idx).ffill()
+    umcsent_daily = umcsent_raw.reindex(full_idx).ffill()
+
+    # ── Derived features ───────────────────────────────────────────────────
+    # Retail sales mom change (month-over-month pct change, 21-day approx)
+    rsxfs_mom = rsxfs_daily.pct_change(21) * 100
+
+    # Retail sales 3-month z-score (63-day rolling)
+    rs_roll_mean = rsxfs_daily.rolling(63, min_periods=21).mean()
+    rs_roll_std  = rsxfs_daily.rolling(63, min_periods=21).std()
+    rsxfs_zscore = (rsxfs_daily - rs_roll_mean) / rs_roll_std.replace(0, np.nan)
+
+    # Consumer sentiment 3-month change (63-day diff of monthly-ffilled level)
+    umcsent_chg3m = umcsent_daily.diff(63)
+
+    # ── Assemble wide-format DataFrame ─────────────────────────────────────
+    cs_staples_df = pd.DataFrame({
+        "retail_sales_level":     rsxfs_daily,
+        "retail_sales_mom_change": rsxfs_mom,
+        "retail_sales_zscore_3m": rsxfs_zscore,
+        "consumer_sentiment_level":   umcsent_daily,
+        "consumer_sentiment_change_3m": umcsent_chg3m,
+    }, index=full_idx)
+    cs_staples_df.index = pd.to_datetime(cs_staples_df.index).normalize()
+    cs_staples_df.index.name = "date"
+
+    CONSUMER_STAPLES_DIR.mkdir(parents=True, exist_ok=True)
+    cs_staples_df.to_parquet(cs_staples_path, engine="pyarrow")
+    size_kb = cs_staples_path.stat().st_size / 1024
+    print(f"\n  Saved consumer_staples_events: {len(cs_staples_df):,} daily rows -> "
+          f"{cs_staples_path.relative_to(ROOT)} ({size_kb:.0f} KB)")
+    print(f"  Retail sales valid rows   : {rsxfs_daily.notna().sum():,}  "
+          f"(from {rsxfs_raw.index[0].date()})")
+    print(f"  Sentiment valid rows      : {umcsent_daily.notna().sum():,}  "
+          f"(from {umcsent_raw.index[0].date()})")
+    print(f"  Columns: {list(cs_staples_df.columns)}")
+    cs_staples_ok = True
+except Exception as exc:
+    print(f"FAILED: {exc}")
+    print("  [WARN] consumer_staples_events.parquet not saved -- "
+          "consumer staples features will use sentinel 0.0")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -650,4 +740,6 @@ if cs_path.exists():
     print(f"    {cs_path.relative_to(ROOT)}")
 if energy_ok and energy_path.exists():
     print(f"    {energy_path.relative_to(ROOT)}")
+if cs_staples_ok and cs_staples_path.exists():
+    print(f"    {cs_staples_path.relative_to(ROOT)}")
 print(f"\nStep 4 complete. Next step: src/pipeline/05_event_features.py\n")

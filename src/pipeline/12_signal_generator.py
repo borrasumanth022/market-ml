@@ -11,20 +11,21 @@ Timing edge cases handled:
   Missed several Mondays : only generates signals for the current week; prints how
                            many Mondays were missed; does NOT backfill past weeks.
 
-Loads the trained models, fetches the latest weekly OHLCV for all 32 tickers,
+Loads the trained models, fetches the latest weekly OHLCV for all 37 tickers,
 computes the full feature vector (SELECTED_36 + EVENT_14 + REGIME_9 + optional sector extras),
-and outputs iron condor signals at confidence threshold 0.65.
+and outputs iron condor signals at confidence threshold 0.60.
 Appends every signal (FIRE or NO_FIRE) to data/signals/signal_log.parquet.
 
 Signal rule:
-  FIRE    : model predicts Sideways with proba_side >= SIGNAL_THRESHOLD (0.65)
+  FIRE    : model predicts Sideways with proba_side >= SIGNAL_THRESHOLD (0.60)
   NO_FIRE : proba_side < SIGNAL_THRESHOLD
 
-Models used (Phase 3):
-  tech       (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl              (71 features)
-  biotech    (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl        (74 features)
-  financials  (5 tickers) -> models/financials/xgb_financials_shared_v1.pkl  (67 features)
-  energy      (5 tickers) -> models/energy/xgb_energy_shared_v1.pkl          (71 features)
+Models used (Phase 4a):
+  tech             (12 tickers) -> models/tech/xgb_tech_shared_v2.pkl                   (71 features)
+  biotech          (10 tickers) -> models/biotech/xgb_biotech_shared_v2.pkl             (74 features)
+  financials        (5 tickers) -> models/financials/xgb_financials_shared_v1.pkl       (67 features)
+  energy            (5 tickers) -> models/energy/xgb_energy_shared_v1.pkl               (71 features)
+  consumer_staples  (5 tickers) -> models/consumer_staples/xgb_consumer_staples_shared_v1.pkl (68 features)
   VRTX finetuned v1 RETIRED: v2 shared biotech now routes VRTX (holdout F1 0.410).
     The finetuned model's +0.043 advantage was measured on 2024 data (now in training).
   Each model stores its own feature_names list -- the feature vector is built
@@ -34,8 +35,8 @@ Kelly Criterion position sizing (half-Kelly, capped at 20% of portfolio):
   kelly_fraction   = (WIN_RATE / AVG_LOSS) - (LOSS_RATE / AVG_WIN)
   recommended_size = min(kelly_fraction * 0.5, MAX_POSITION_PCT)
 
-  Using WIN_RATE = 0.677 from Phase 2 OOS backtest (4,657 trades at threshold 0.65, WR=67.7%).
-  Threshold 0.65 is the first OOS breakeven threshold (66.7%) in the Phase 2 universe.
+  Using WIN_RATE = 0.695 from Phase 4a OOS backtest (16,983 trades at threshold 0.60, WR=69.5%).
+  Threshold 0.60 is the first OOS breakeven threshold (66.7%) in the Phase 4a 37-ticker universe.
 
 Known approximations:
   - macro_stress_score z-score computed over the 500-day OHLCV window, not the
@@ -74,12 +75,12 @@ MODELS_DIR    = ROOT / "models"
 FDA_EVENTS    = ROOT / "data" / "events" / "biotech" / "fda_events.parquet"
 
 # ── Strategy constants ────────────────────────────────────────────────────────
-SIGNAL_THRESHOLD = 0.65
+SIGNAL_THRESHOLD = 0.60
 PREMIUM          = 0.015    # iron condor credit per unit
 LOSS_MAX         = 0.030    # max loss per unit if wings triggered
 
-# Kelly inputs from Phase 2 OOS backtest (4,657 trades at threshold 0.65, WR=67.7%)
-WIN_RATE         = 0.677
+# Kelly inputs from Phase 4a OOS backtest (16,983 trades at threshold 0.60, WR=69.5%)
+WIN_RATE         = 0.695
 LOSS_RATE        = 1.0 - WIN_RATE
 AVG_WIN          = PREMIUM
 AVG_LOSS         = LOSS_MAX
@@ -96,7 +97,8 @@ CLASS_NAMES    = ["Bear", "Sideways", "Bull"]
 # AMD:  F1=0.344 (-0.053), high idiosyncratic volatility
 # TSLA: F1=0.338 (-0.059), extreme volatility + short history (IPO 2010)
 # MRNA: F1=0.329 (-0.080), very short history (IPO 2018, only 1,327 OOS rows)
-EXCLUDED_FROM_SIGNALS = {"AMD", "TSLA", "MRNA"}
+# COST: F1=0.468 (-0.067 below consumer_staples avg 0.535) -- fine-tuning deferred to Phase 5
+EXCLUDED_FROM_SIGNALS = {"AMD", "TSLA", "MRNA", "COST"}
 
 # 8-week rolling trade cap -- prevents one ticker dominating signals
 # No single ticker may represent >= CAP_MAX_SHARE of fires in the last CAP_WEEKS.
@@ -138,7 +140,8 @@ _add_macro           = _event_mod.add_macro_features      # (feat, fred) -> None
 _add_regime_stress   = _event_mod.add_regime_features     # (feat) -> None (rate env/inflation/stress)
 _add_fda             = _event_mod.add_fda_features          # (feat, fda_df, ticker) -> None
 _add_credit_spread   = _event_mod.add_credit_spread_features  # (feat) -> None
-_add_energy          = _event_mod.add_energy_features        # (feat) -> None
+_add_energy               = _event_mod.add_energy_features               # (feat) -> None
+_add_consumer_staples     = _event_mod.add_consumer_staples_features      # (feat) -> None
 
 
 # ── Printers ──────────────────────────────────────────────────────────────────
@@ -227,17 +230,18 @@ def count_missed_mondays(signal_date: pd.Timestamp) -> int:
 
 def load_models() -> dict:
     """
-    Load all saved models from models/ directory (Phase 3).
+    Load all saved models from models/ directory (Phase 4a).
     All tickers route to their sector shared model.
     VRTX finetuned v1 retired: v2 shared biotech used for VRTX.
     Fails loudly if any required model file is missing.
     Returns {ticker: bundle_dict}.
     """
     paths = {
-        "tech":       MODELS_DIR / "tech"       / "xgb_tech_shared_v2.pkl",
-        "biotech":    MODELS_DIR / "biotech"    / "xgb_biotech_shared_v2.pkl",
-        "financials": MODELS_DIR / "financials" / "xgb_financials_shared_v1.pkl",
-        "energy":     MODELS_DIR / "energy"     / "xgb_energy_shared_v1.pkl",
+        "tech":             MODELS_DIR / "tech"             / "xgb_tech_shared_v2.pkl",
+        "biotech":          MODELS_DIR / "biotech"          / "xgb_biotech_shared_v2.pkl",
+        "financials":       MODELS_DIR / "financials"       / "xgb_financials_shared_v1.pkl",
+        "energy":           MODELS_DIR / "energy"           / "xgb_energy_shared_v1.pkl",
+        "consumer_staples": MODELS_DIR / "consumer_staples" / "xgb_consumer_staples_shared_v1.pkl",
     }
     for label, path in paths.items():
         if not path.exists():
@@ -478,10 +482,11 @@ def compute_ticker_feature_row(
 
     Fails loudly if any required feature is NaN in the final row.
     """
-    sector        = TICKER_SECTOR[ticker]
-    is_biotech    = (sector == "biotech")
-    is_financials = (sector == "financials")
-    is_energy     = (sector == "energy")
+    sector              = TICKER_SECTOR[ticker]
+    is_biotech          = (sector == "biotech")
+    is_financials       = (sector == "financials")
+    is_energy           = (sector == "energy")
+    is_consumer_staples = (sector == "consumer_staples")
 
     # --- 1. Technical features ---
     tech_df = _build_tech_features(ohlcv, ticker)
@@ -514,6 +519,8 @@ def compute_ticker_feature_row(
         _add_credit_spread(feat)
     if is_energy:
         _add_energy(feat)
+    if is_consumer_staples:
+        _add_consumer_staples(feat)
 
     # AMZN EPS outlier: same clip applied during training
     if ticker == "AMZN" and "last_eps_surprise_pct" in feat.columns:
@@ -873,7 +880,7 @@ def main() -> None:
 
     section("ManthIQ Step 12 -- Weekly Iron Condor Signal Generator")
     print(f"  Threshold      : {SIGNAL_THRESHOLD}")
-    print(f"  Win rate basis : {WIN_RATE:.1%} (Phase 2 OOS, 4,657 trades at threshold 0.65)")
+    print(f"  Win rate basis : {WIN_RATE:.1%} (Phase 4a OOS, 16,983 trades at threshold 0.60)")
     print(f"  Kelly full     : {KELLY_FULL:.4f}  ({KELLY_FULL*100:.1f}%)")
     print(f"  Kelly half     : {KELLY_HALF:.4f}  ({KELLY_HALF*100:.1f}%)")
     print(f"  Recommended sz : {kelly_rec_pct:.1f}%  (half-Kelly capped at {MAX_POSITION_PCT:.0%})")
