@@ -13,10 +13,17 @@ Feature groups:
   E. Market microstructure       -- candle body, shadows, gap, HL range
   F. Calendar features           -- day-of-week, month, quarter-end flags
 
+Incremental update behaviour:
+  Features parquet exists and is current (matches raw last date) : skip.
+  Features parquet exists but is stale                           : run build_features on
+    the full raw history (rolling windows need the full context), then append only the
+    new rows (dates > existing features last date) to the parquet.
+  No features parquet                                            : full build as before.
+
 Output: data/processed/{TICKER}_features.parquet
 
 Usage:
-    # All tickers (skips already-processed)
+    # All tickers (incremental update or skip if current)
     C:\\Users\\borra\\anaconda3\\python.exe src\\pipeline\\02_features.py
 
     # Single ticker
@@ -186,37 +193,69 @@ def build_features(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 def process_ticker(ticker: str) -> bool:
     """
     Load raw data, compute features, save. Returns True on success.
-    Skips if output already exists.
+
+    Incremental logic:
+      - If features parquet is already current (last date matches raw last date): skip.
+      - If stale: build_features runs on the full raw history (for correct rolling
+        windows), then only new rows are appended to the existing parquet.
+      - If no features parquet: full build.
     """
     raw_path = RAW_DIR / f"{ticker}_daily_raw.parquet"
     out_path = PROCESSED_DIR / f"{ticker}_features.parquet"
-
-    if out_path.exists():
-        size_kb = out_path.stat().st_size / 1024
-        print(f"  {ticker}: already exists ({size_kb:.0f} KB) -- skipping")
-        return True
 
     if not raw_path.exists():
         print(f"  {ticker}: raw data not found at {raw_path.relative_to(ROOT)}")
         print(f"           Run 01_fetch_data.py first.")
         return False
 
-    raw = pd.read_parquet(raw_path)
-    print(f"  {ticker}: {len(raw)} raw rows loaded")
+    raw = pd.read_parquet(raw_path, engine="pyarrow")
+    raw.index = pd.to_datetime(raw.index)
+    raw_last = raw.index.max()
 
+    if out_path.exists():
+        existing  = pd.read_parquet(out_path, engine="pyarrow")
+        existing.index = pd.to_datetime(existing.index)
+        feat_last = existing.index.max()
+
+        if feat_last >= raw_last:
+            print(f"  {ticker}: features current ({feat_last.date()}) -- skipping")
+            return True
+
+        # Build on full raw (rolling windows need full history), append only new rows
+        print(f"  {ticker}: {len(raw)} raw rows -- computing features for new dates "
+              f"({feat_last.date()} -> {raw_last.date()})")
+        features = build_features(raw, ticker)
+        new_rows = features[features.index > feat_last]
+
+        if new_rows.empty:
+            print(f"  {ticker}: no new feature rows after warm-up drop -- skipping")
+            return True
+
+        missing = [f for f in SELECTED_36 if f not in new_rows.columns]
+        if missing:
+            raise ValueError(f"[{ticker}] Missing expected model features: {missing}")
+
+        combined = pd.concat([existing, new_rows])
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+        combined.to_parquet(out_path, engine="pyarrow", index=True)
+        size_kb = out_path.stat().st_size / 1024
+        print(f"  {ticker}: +{len(new_rows)} rows appended "
+              f"-> {combined.shape[0]} total ({size_kb:.0f} KB)")
+        return True
+
+    # Full build (no existing features parquet)
+    print(f"  {ticker}: {len(raw)} raw rows loaded")
     features = build_features(raw, ticker)
 
-    # Sanity check: verify 36 selected features are all present
     missing = [f for f in SELECTED_36 if f not in features.columns]
     if missing:
         raise ValueError(f"[{ticker}] Missing expected model features: {missing}")
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    features.to_parquet(out_path)
+    features.to_parquet(out_path, engine="pyarrow", index=True)
     size_kb = out_path.stat().st_size / 1024
     print(f"  {ticker}: saved {features.shape[0]} rows x {features.shape[1]} cols "
           f"-> {out_path.relative_to(ROOT)} ({size_kb:.0f} KB)")
-
     return True
 
 
@@ -235,30 +274,21 @@ def run_all() -> None:
     print(f"Tickers  : {[t for _, t in all_tickers]}")
     print(f"Output   : {PROCESSED_DIR.relative_to(ROOT)}/\n")
 
-    results = {"ok": [], "skip": [], "err": []}
+    results = {"ok": [], "err": []}
 
     for sector, ticker in all_tickers:
-        out_path = PROCESSED_DIR / f"{ticker}_features.parquet"
         print(f"[{sector.upper()}] {ticker}")
-
-        if out_path.exists():
-            size_kb = out_path.stat().st_size / 1024
-            print(f"  Already exists ({size_kb:.0f} KB) -- skipping\n")
-            results["skip"].append(ticker)
-            continue
-
         try:
             success = process_ticker(ticker)
             if success:
                 results["ok"].append(ticker)
         except Exception as exc:
-            print(f"  ERROR: {exc}\n")
+            print(f"  [ERR]  {exc}\n")
             results["err"].append((ticker, str(exc)))
         print()
 
     print("=" * 60)
-    print(f"Done.  Computed: {len(results['ok'])}  "
-          f"Skipped: {len(results['skip'])}  "
+    print(f"Done.  Processed: {len(results['ok'])}  "
           f"Errors: {len(results['err'])}")
     if results["err"]:
         print("\nFailed tickers:")
