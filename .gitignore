@@ -3,6 +3,9 @@ data/raw/
 data/processed/
 data/events/
 
+# Agent outputs (generated at runtime — not repo artifacts)
+docs/regime_notes/
+
 # Models (large binaries)
 models/
 
